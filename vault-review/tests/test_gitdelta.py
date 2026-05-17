@@ -10,7 +10,6 @@ import pytest
 
 from vault_review.gitdelta import collect_events
 
-
 # ─── fixtures ────────────────────────────────────────────────────────────────
 
 

@@ -381,15 +381,14 @@ def _is_in_scope(b: SessionBundle) -> bool:
     # 2. Below message threshold AND no tool calls
     if b.message_count < MIN_MESSAGES_FOR_SCOPE and b.tool_summary.total_calls == 0:
         return False
-    # 3. Outcome unknown AND no tool calls AND no artifacts → likely noise
-    if (  # noqa: SIM103
-        b.outcome == "unknown"
-        and b.tool_summary.total_calls == 0
-        and not b.artifacts
-        and b.message_count < 5
-    ):
-        return False
-    return True
+    # 3. Unknown-outcome sessions must show concrete write/edit activity.
+    return b.outcome != "unknown" or _has_file_write_activity(b)
+
+
+def _has_file_write_activity(b: SessionBundle) -> bool:
+    if b.tool_summary.files_touched:
+        return True
+    return any(a["kind"] in {"file_write", "file_edit"} for a in b.artifacts)
 
 
 # ─── timing helper ────────────────────────────────────────────────────────────

@@ -106,13 +106,30 @@ def _load_system_prompt() -> str:
 def get_or_create_digest(bundle: SessionBundle, *, force: bool = False) -> Digest:
     """Cache-aware digest. Reads from agent_review.session_digests when
     (session_id, data_version) matches, otherwise calls the LLM and upserts."""
-    if not force:
-        cached = _load_cached(bundle.session_id, bundle.data_version)
-        if cached is not None:
-            return cached
-    digest, usage = _call_llm(bundle)
-    _upsert(bundle, digest, usage)
+    digest, _, _ = get_or_create_digest_result(bundle, force=force)
     return digest
+
+
+def get_or_create_digest_result(
+    bundle: SessionBundle,
+    *,
+    force: bool = False,
+    persist: bool = True,
+) -> tuple[Digest, dict[str, int], bool]:
+    """Cache-aware digest with token usage.
+
+    Returns (digest, usage, fresh). When persist=False, fresh LLM results are
+    returned without writing session_digests, which keeps CLI dry-runs dry.
+    """
+    if not force:
+        cached = _load_cached_with_usage(bundle.session_id, bundle.data_version)
+        if cached is not None:
+            digest, usage = cached
+            return digest, usage, False
+    digest, usage = _call_llm(bundle)
+    if persist:
+        _upsert(bundle, digest, usage)
+    return digest, usage, True
 
 
 def get_or_create_digests(bundles: list[SessionBundle], *, force: bool = False) -> list[Digest]:
@@ -127,10 +144,22 @@ def get_or_create_digests(bundles: list[SessionBundle], *, force: bool = False) 
 
 
 def _load_cached(session_id: str, data_version: int) -> Digest | None:
+    cached = _load_cached_with_usage(session_id, data_version)
+    if cached is None:
+        return None
+    digest, _ = cached
+    return digest
+
+
+def _load_cached_with_usage(
+    session_id: str,
+    data_version: int,
+) -> tuple[Digest, dict[str, int]] | None:
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT digest FROM agent_review.session_digests
+            SELECT digest, prompt_tokens, output_tokens, cached_tokens
+              FROM agent_review.session_digests
              WHERE session_id = %s AND data_version = %s
             """,
             (session_id, data_version),
@@ -138,7 +167,11 @@ def _load_cached(session_id: str, data_version: int) -> Digest | None:
         row = cur.fetchone()
     if not row:
         return None
-    return Digest.model_validate(row["digest"])
+    return Digest.model_validate(row["digest"]), {
+        "input_tokens": row["prompt_tokens"],
+        "output_tokens": row["output_tokens"],
+        "cache_read_input_tokens": row["cached_tokens"],
+    }
 
 
 def _upsert(bundle: SessionBundle, digest: Digest, usage: dict[str, int]) -> None:
@@ -253,6 +286,18 @@ def _render_user_payload(b: SessionBundle) -> str:
                 f"- {sub.agent} ({sub.message_count} msgs, "
                 f"{sub.tool_summary.total_calls} tool calls): "
                 f"{(sub.first_message[:120] + '…') if len(sub.first_message) > 120 else sub.first_message}"
+            )
+        parts.append("\n# subagent transcripts (compressed)")
+        for sub in b.subagents:
+            parts.append(
+                f"\n## subagent {sub.session_id}\n"
+                f"- agent: {sub.agent}\n"
+                f"- project: {sub.project}  (source: {sub.project_source})\n"
+                f"- cwd: {sub.cwd or '(none)'}\n"
+                f"- outcome: {sub.outcome}  (confidence: {sub.outcome_confidence})\n"
+                f"- tool calls: {sub.tool_summary.total_calls}\n"
+                f"{_render_tool_summary(sub.tool_summary)}\n\n"
+                f"{sub.transcript_text or '(empty)'}"
             )
 
     parts.append("\n# transcript (compressed)")

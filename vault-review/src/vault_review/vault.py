@@ -22,7 +22,6 @@ import frontmatter
 
 from .config import get_settings
 
-
 # ─── regex helpers ────────────────────────────────────────────────────────────
 
 
@@ -108,10 +107,7 @@ def write_daily_section(date: dt.date, section_md: str) -> Path:
     s.checkins_dir.mkdir(parents=True, exist_ok=True)
     note_path = s.checkins_dir / f"{date.isoformat()}.md"
 
-    if note_path.exists():
-        post = frontmatter.load(note_path)
-    else:
-        post = _default_daily_post(date)
+    post = frontmatter.load(note_path) if note_path.exists() else _default_daily_post(date)
 
     marker = _closing_marker("daily", date.isoformat())
     full_section = section_md.rstrip() + "\n" + marker + "\n"
@@ -172,10 +168,7 @@ def write_weekly_section(week_label: str, section_md: str) -> Path:
     s.weekly_dir.mkdir(parents=True, exist_ok=True)
     note_path = _week_note_path(week_label)
 
-    if note_path.exists():
-        post = frontmatter.load(note_path)
-    else:
-        post = _default_weekly_post(week_label)
+    post = frontmatter.load(note_path) if note_path.exists() else _default_weekly_post(week_label)
 
     marker = _closing_marker("weekly", week_label)
     full_section = section_md.rstrip() + "\n" + marker + "\n"

@@ -32,10 +32,15 @@ def synthesize_day(
     section markdown ready for the vault writer. Caller is responsible for
     deciding whether to write to vault and/or persist to DB."""
     # Pull cumulative digest token usage from persisted rows so cost reflects
-    # the full report, not just this run's incremental spend.
+    # the full report, not just this run's incremental spend. Dry-run callers
+    # pass explicit usage so fresh non-persisted digests are counted instead.
     session_ids = [b.session_id for b, _ in bundles_with_digests]
-    persisted_digest_usages = _load_persisted_digest_usages(session_ids)
-    stats = _compute_stats(date, bundles_with_digests, persisted_digest_usages)
+    digest_usage_source = (
+        digest_usages
+        if digest_usages is not None
+        else _load_persisted_digest_usages(session_ids)
+    )
+    stats = _compute_stats(date, bundles_with_digests, digest_usage_source)
     narrative_md, synth_usage = _call_llm(date, bundles_with_digests, stats)
 
     s = get_settings()

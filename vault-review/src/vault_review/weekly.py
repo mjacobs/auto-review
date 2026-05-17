@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+from .config import get_settings
+
 
 def parse_week(s: str, today: dt.date | None = None) -> str:
     """Parse a week spec into a 'YYYY-W##' label.
@@ -15,7 +17,7 @@ def parse_week(s: str, today: dt.date | None = None) -> str:
 
     Args:
         s: Week spec string.
-        today: Override today's date (defaults to dt.date.today()).
+        today: Override today's date (defaults to configured TZ's today).
 
     Returns:
         ISO week label like '2026-W19'.
@@ -24,7 +26,7 @@ def parse_week(s: str, today: dt.date | None = None) -> str:
         ValueError: If the input cannot be parsed.
     """
     if today is None:
-        today = dt.date.today()
+        today = dt.datetime.now(get_settings().tz).date()
     s = s.strip().lower()
     if s == "this-week":
         iso_year, iso_week, _ = today.isocalendar()

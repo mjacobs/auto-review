@@ -11,7 +11,7 @@ from dateutil import parser as date_parser
 
 from .config import get_settings
 from .db import connect
-from .digest import get_or_create_digest
+from .digest import get_or_create_digest, get_or_create_digest_result
 from .extract import extract_day, extract_session
 from .synth import persist_report, synthesize_day
 from .vault import read_section, remove_section, write_section
@@ -165,12 +165,13 @@ def _run_one(
     pairs: list[tuple] = []
     digest_usages: list[dict[str, int]] = []
     for b in bundles:
-        before_us = _last_usage_for(b.session_id)
-        d = get_or_create_digest(b, force=force)
-        after_us = _last_usage_for(b.session_id)
-        # Only count usage if it changed (i.e. a fresh LLM call happened).
-        if force or before_us != after_us:
-            digest_usages.append(after_us)
+        d, usage, fresh = get_or_create_digest_result(
+            b,
+            force=force,
+            persist=not dry_run,
+        )
+        if dry_run or fresh:
+            digest_usages.append(usage)
         pairs.append((b, d))
         click.echo(
             f"    digested {b.session_id[:24]}…  outcome={d.outcome}",
@@ -178,7 +179,11 @@ def _run_one(
         )
 
     click.echo("  synthesizing daily narrative…", err=True)
-    report = synthesize_day(date, pairs, digest_usages=digest_usages)
+    report = synthesize_day(
+        date,
+        pairs,
+        digest_usages=digest_usages if dry_run else None,
+    )
     click.echo(
         f"  cost: digest=${report.stats['est_digest_cost_usd']:.4f}  "
         f"synth=${report.stats['est_synth_cost_usd']:.4f}  "
@@ -202,24 +207,6 @@ def _run_one(
 
     path = write_section(date, report.section_md)
     click.echo(f"  wrote section → {path}", err=True)
-
-
-def _last_usage_for(session_id: str) -> dict[str, int]:
-    """Pull token usage from the cached digest row, if any."""
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT prompt_tokens, output_tokens, cached_tokens "
-            "FROM agent_review.session_digests WHERE session_id = %s",
-            (session_id,),
-        )
-        row = cur.fetchone()
-    if not row:
-        return {}
-    return {
-        "input_tokens": row["prompt_tokens"],
-        "output_tokens": row["output_tokens"],
-        "cache_read_input_tokens": row["cached_tokens"],
-    }
 
 
 # ─── show / reset ────────────────────────────────────────────────────────────

@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import textwrap
-from pathlib import Path
-
-import pytest
-
 from vault_review.dossier import group_of, render_dossier, summarize_file
-
 
 # ─── group_of ────────────────────────────────────────────────────────────────
 
