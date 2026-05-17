@@ -29,20 +29,29 @@ Auth: Cloudflare Access service token headers.
 pages of 100, filtering to `start_ms <= created_at < end_ms`, stopping when
 a page's tail dips below `start_ms`.
 
+## Framing: inbox, not recap
+
+The daily section is an **inbox surface for triage**, not a topical summary.
+Live preview of a 7-day sample (2026-05-17) showed LLM-enriched tags average
+4–5 per capture; tag-grouping produced 4–5× bullet duplication and obscured
+the chronological flow. Freeform captures are hard to categorize even with
+regular use — categorization is the wrong primitive for raw inbox items.
+
+memex-review's job is to *surface* what was captured so it can be processed
+later (moved into project notes, discarded, or used to seed a new project).
+The triage workflow itself is out of scope for v1 — tracked separately as
+`auto-review-qa8`.
+
 ## Marker-based idempotency
 
 ```
-## memex-review — 2026-05-14
+## memex-review — 2026-05-14 — inbox
 
-_window: 2026-05-14_
+_window: 2026-05-14 — 3 captures_
 
-### #tag-a (3)
-- 14:22 — short summary or content head
-- 11:08 — …
-- 09:51 — …
-
-### #tag-b (1)
-- 17:40 — …
+- 14:22 — short summary or content head `[#tag-a #tag-b]`
+- 17:40 — … `[#tag-b]`
+- 19:08 — … `[#tag-a]`
 
 <!-- memex-review:daily=2026-05-14 generated_at=2026-05-15T04:00:00Z -->
 ```
@@ -57,14 +66,18 @@ Section regex matches `## memex-review` through the closing marker
 
 Human edits outside the marker survive. Mirrors vault-review's vault.py.
 
-## Grouping
+## Layout
 
-Captures grouped by tag, sorted by count desc then tag name. Captures with
-no tag fall under `### (untagged)`. Within a group, items sorted by
-`created_at` asc and rendered as `HH:MM — <summary or content-head>`.
+Flat, chronological (oldest first). Each capture is one bullet:
 
-If a capture has multiple tags, it appears under each (small dup is fine
-for v1; revisit if the noise becomes real).
+    - HH:MM — <summary or first-line of content_preview> `[#tag-1 #tag-2 …]`
+
+Tags render as inline chips, not section headers. Captures with no tags
+omit the chip group entirely. HH:MM is the capture's `created_at` rendered
+in the configured `TZ`. Line text prefers `summary` (LLM-enriched) and
+falls back to the first non-empty line of `content_preview`.
+
+Empty windows render `_no captures in window_` instead of a bullet list.
 
 ## File structure
 
