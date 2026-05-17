@@ -13,9 +13,15 @@ marker-based idempotency, same file target.
 ## Source
 
 `GET $MEMEX_URL/thoughts?limit=100&before=<created_at_ms>` returns up to 100
-captures ordered DESC by `created_at`. The response includes `content`,
-`source`, `summary`, `tags`, and millisecond `created_at` / `updated_at` —
-no per-doc round-trip needed.
+captures ordered DESC by `created_at`. Each row includes `id`,
+`content_preview` (truncated body), `source`, `summary`, `tags`, `metadata`,
+and millisecond `created_at` / `updated_at`. The truncated preview is enough
+for daily recap lines; we do not hit `GET /thought/:id` per row.
+
+(Discovered via live smoke 2026-05-17: the list endpoint returns
+`content_preview`, not full `content`, despite the SQL SELECT in
+handlers.ts `listRecent` projecting `content` — the result mapping renames
+and truncates.)
 
 Auth: Cloudflare Access service token headers.
 
