@@ -13,6 +13,7 @@ from dateutil import parser as date_parser
 
 from .client import collect_for_date
 from .config import get_settings
+from .cursor import filter_visible, load_cursor
 from .dossier import render_dossier
 from .vault import read_daily_section, remove_daily_section, write_daily_section
 
@@ -89,11 +90,16 @@ def _run_one(date: dt.date, *, dry_run: bool, do_print: bool) -> None:
     click.echo(f"\n=== {date.isoformat()} ({s.tz_name}) ===", err=True)
 
     thoughts = collect_for_date(date, settings=s)
-    click.echo(f"  {len(thoughts)} captures in window", err=True)
+    cursor = load_cursor(s)
+    visible = filter_visible(thoughts, cursor)
+    click.echo(
+        f"  {len(visible)} visible / {len(thoughts)} fetched (cursor {cursor.isoformat()})",
+        err=True,
+    )
 
     heading = f"memex-review — {date.isoformat()} — inbox"
     window_label = date.isoformat()
-    section_md = render_dossier(thoughts, window_label, heading, s.tz)
+    section_md = render_dossier(visible, window_label, heading, s.tz)
 
     if do_print:
         click.echo(section_md)

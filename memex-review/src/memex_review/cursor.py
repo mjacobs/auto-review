@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from .client import Thought
 from .config import Settings
 
 
@@ -91,3 +92,10 @@ def save_cursor(settings: Settings, value: dt.datetime) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
+
+
+def filter_visible(thoughts: list[Thought], cursor: dt.datetime) -> list[Thought]:
+    """Drop thoughts captured before the cursor; keep `created_at >= cursor`."""
+    if cursor.tzinfo is None:
+        raise ValueError("filter_visible requires a tz-aware cursor")
+    return [t for t in thoughts if t.created_at >= cursor]
