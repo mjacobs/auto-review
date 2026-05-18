@@ -77,9 +77,19 @@ for now (per-tool log split is parked future work).
 - First-ever live write to the vault (after that, idempotent re-runs are fine)
 - Cross-repo changes (`serverless-memex`, `agentsview`, etc.) — flag the boundary explicitly
 
-The vault has **background auto-sync** — files you write under `~/vault/`
-get committed and pushed by an external process. Don't try to `git add` /
-`git commit` the vault yourself; it'll happen.
+**Vault git side effects depend on context:**
+
+- **Interactive vault edits** (you opening a note, running a one-off
+  script, etc.): the vault has background auto-sync — files you write
+  under `~/vault/` get committed and pushed by an external process.
+  Don't `git add` / `git commit` the vault yourself; it'll happen.
+- **Cron wrappers** (`vault-review/deploy/run-recap-*`,
+  `memex-review/deploy/run-memex-review-*`, future doctor wrapper):
+  the wrapper is responsible for its own `git add / commit / push` of
+  the section it just wrote. This is intentional — it avoids races
+  between cron finishing and the background sync picking the file up,
+  and keeps the per-run audit trail (commit message names the tool +
+  date) in vault history. Existing production wrappers already do this.
 
 ### Secrets policy
 
@@ -116,6 +126,12 @@ ssh <host> 'grep -c "^export <PREFIX>_NAME1=" ~/.secrets'
   render only. `agent-review` is the only sibling that does LLM
   synthesis (and accordingly is the only one with a Postgres cache for
   digest cost).
+- **Cron wrappers own their own git push.** The "background auto-sync"
+  note above is for interactive edits; cron wrappers explicitly
+  `git add / commit / push` the section they wrote. Don't "fix" the
+  wrappers to defer to the background sync — the explicit push is
+  intentional (avoids races, preserves per-run audit trail in commit
+  history). Resolved 2026-05-18 via `auto-review-jkt`.
 
 ### Working in this project
 
