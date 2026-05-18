@@ -14,5 +14,5 @@ def test_cli_help() -> None:
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
     assert "memex-review" in result.output.lower()
-    for verb in ("run", "today", "yesterday", "show", "reset"):
+    for verb in ("run", "today", "yesterday", "show", "reset", "process", "cursor"):
         assert verb in result.output

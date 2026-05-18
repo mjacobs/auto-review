@@ -12,8 +12,8 @@ import click
 from dateutil import parser as date_parser
 
 from .client import collect_for_date
-from .config import get_settings
-from .cursor import filter_visible, load_cursor
+from .config import Settings, get_settings
+from .cursor import cursor_path, filter_visible, load_cursor, save_cursor
 from .dossier import render_dossier
 from .vault import read_daily_section, remove_daily_section, write_daily_section
 
@@ -133,6 +133,125 @@ def reset(date_str: str) -> None:
         click.echo(f"removed memex-review section for {date.isoformat()}", err=True)
     else:
         click.echo(f"no memex-review section to remove for {date.isoformat()}", err=True)
+
+
+def _eod(date: dt.date, s: Settings) -> dt.datetime:
+    """End-of-day in local tz (23:59:59 — matches the cursor design doc)."""
+    return dt.datetime.combine(date, dt.time(23, 59, 59), tzinfo=s.tz)
+
+
+def _relative_phrase(cursor: dt.datetime, s: Settings) -> str:
+    today = dt.datetime.now(tz=s.tz).date()
+    cdate = cursor.astimezone(s.tz).date()
+    delta = (today - cdate).days
+    if delta == 0:
+        return "today EOD"
+    if delta == 1:
+        return "yesterday EOD"
+    if delta > 1:
+        return f"{delta} days ago EOD"
+    if delta == -1:
+        return "tomorrow EOD"
+    return f"{-delta} days ahead EOD"
+
+
+@main.command(name="process")
+@click.option(
+    "--through",
+    "through",
+    default="yesterday",
+    help="Advance cursor through end of this date (default: yesterday).",
+)
+def process_cmd(through: str) -> None:
+    """Advance the cursor to end-of-DATE local. Idempotent; refuses future dates."""
+    s = get_settings()
+    target_date = _parse_date(through)
+    today = dt.datetime.now(tz=s.tz).date()
+    if target_date >= today:
+        click.echo(
+            f"refusing to advance to {target_date.isoformat()}: must be yesterday or earlier",
+            err=True,
+        )
+        sys.exit(2)
+
+    new_cursor = _eod(target_date, s)
+    has_file = cursor_path(s).exists()
+    current = load_cursor(s)
+    if has_file and new_cursor <= current:
+        click.echo(
+            f"cursor already at or past {new_cursor.isoformat()} "
+            f"(current: {current.isoformat()})",
+            err=True,
+        )
+        return
+
+    save_cursor(s, new_cursor)
+    if has_file:
+        click.echo(
+            f"advanced cursor: {current.isoformat()} → {new_cursor.isoformat()}",
+            err=True,
+        )
+    else:
+        click.echo(
+            f"initialized cursor (bootstrap → committed): {new_cursor.isoformat()}",
+            err=True,
+        )
+
+
+@main.command(name="cursor")
+@click.option("--rewind", "rewind", default=None, help="Move cursor BACK to end-of-DATE.")
+@click.option(
+    "--init",
+    "init",
+    default=None,
+    help="First-time bootstrap override; refuses if a cursor file exists.",
+)
+def cursor_cmd(rewind: str | None, init: str | None) -> None:
+    """Show or modify the inbox cursor."""
+    s = get_settings()
+
+    if rewind is not None and init is not None:
+        click.echo("--rewind and --init are mutually exclusive", err=True)
+        sys.exit(2)
+
+    if init is not None:
+        if cursor_path(s).exists():
+            click.echo(
+                f"cursor file already exists at {cursor_path(s)}; "
+                "use --rewind to move it back",
+                err=True,
+            )
+            sys.exit(2)
+        new_cursor = _eod(_parse_date(init), s)
+        save_cursor(s, new_cursor)
+        click.echo(f"initialized cursor: {new_cursor.isoformat()}", err=True)
+        return
+
+    if rewind is not None:
+        current = load_cursor(s)
+        new_cursor = _eod(_parse_date(rewind), s)
+        if new_cursor >= current:
+            click.echo(
+                f"refusing to rewind to {new_cursor.isoformat()}: "
+                f"not earlier than current cursor {current.isoformat()} "
+                "(use `process` to advance forward)",
+                err=True,
+            )
+            sys.exit(2)
+        save_cursor(s, new_cursor)
+        click.echo(
+            f"rewound cursor: {current.isoformat()} → {new_cursor.isoformat()}",
+            err=True,
+        )
+        return
+
+    # Plain `cursor` — print current.
+    current = load_cursor(s)
+    phrase = _relative_phrase(current, s)
+    if not cursor_path(s).exists():
+        click.echo(f"{current.isoformat()} ({phrase}) (not yet persisted; run process to commit)")
+    else:
+        click.echo(f"{current.isoformat()} ({phrase})")
 
 
 if __name__ == "__main__":
