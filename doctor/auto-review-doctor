@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""auto-review doctor v0 — health check for the auto-review sibling crons.
+
+Reads the openclaw cron.log tail and yesterday's check-in note, renders a
+marker-bracketed health section, strip-and-replaces it into today's check-in.
+
+v0 scope per beads `auto-review-fs7`: single-file script, no package, no
+pyproject. Promote to a full sibling (auto-review-doctor/) after ~1 week
+of cron runs proves the report shape is useful.
+
+Run `auto-review-doctor --help` for CLI.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+PT = ZoneInfo("America/Los_Angeles")
+UTC = ZoneInfo("UTC")
+
+DEFAULT_LOG = Path.home() / ".local/state/vault-agent/cron.log"
+DEFAULT_VAULT = Path.home() / "vault"
+TAIL_LINES = 1000
+
+# (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?)
+JOBS = [
+    ("vault-review daily",  "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),  "vault-review",  False),
+    ("memex-review daily",  "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),  "memex-review",  False),
+    ("vault-review weekly", "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"), "vault-review",  True),
+]
+
+DOCTOR_MARKER_OPEN  = re.compile(r"^## auto-review doctor — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
+DOCTOR_MARKER_CLOSE = re.compile(r"^<!-- auto-review-doctor:daily=\d{4}-\d{2}-\d{2} generated_at=\S+ -->$", re.MULTILINE)
+
+
+@dataclass
+class JobReport:
+    name: str
+    expected_hhmm: str
+    fired: bool
+    fired_at_pt: str | None      # "20:01" if today, "(2026-05-15)" if older
+    section_present: bool | None  # None = N/A (not expected today)
+    section_lines: int | None
+    section_note: str             # "0 captures", "" etc.
+    skipped_reason: str | None    # e.g. "weekly — Sundays only"
+
+
+def tail_lines(path: Path, n: int) -> list[str]:
+    if not path.exists():
+        return []
+    # Stdlib-friendly tail: read whole file. cron.log is ~6k lines today;
+    # rotation work (auto-review-75t) is tracked separately. Good enough for v0.
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    return lines[-n:]
+
+
+def parse_utc_iso(s: str) -> dt.datetime:
+    # "2026-05-18T03:01:01Z"
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+
+def latest_match(lines: list[str], pattern: re.Pattern[str]) -> tuple[str, dt.datetime] | None:
+    last: tuple[str, dt.datetime] | None = None
+    for line in lines:
+        m = pattern.search(line)
+        if m:
+            try:
+                last = (line.rstrip(), parse_utc_iso(m.group(1)))
+            except ValueError:
+                continue
+    return last
+
+
+def section_info(text: str, tool: str, target_date: dt.date) -> tuple[bool, int, str]:
+    """Find `<!-- {tool}:daily={target_date} ... -->` and the matching `## {tool} —` heading.
+
+    Returns (present, line_count_inside, note).
+    """
+    date_s = target_date.isoformat()
+    close_marker = re.compile(
+        rf"^<!--\s*{re.escape(tool)}:daily={re.escape(date_s)}\s+generated_at=\S+\s*-->$",
+        re.MULTILINE,
+    )
+    cm = close_marker.search(text)
+    if not cm:
+        return (False, 0, "")
+    open_marker = re.compile(rf"^##\s+{re.escape(tool)}\s+—\s+{re.escape(date_s)}", re.MULTILINE)
+    om = None
+    for m in open_marker.finditer(text):
+        if m.start() < cm.start():
+            om = m
+    if not om:
+        return (True, 0, "(close marker found, open heading missing)")
+    body = text[om.end():cm.start()]
+    line_count = sum(1 for line in body.splitlines() if line.strip())
+    note = ""
+    if "0 captures" in body or "no captures in window" in body:
+        note = "0 captures"
+    return (True, line_count, note)
+
+
+def count_tracebacks(lines: list[str]) -> int:
+    return sum(1 for line in lines if line.startswith("Traceback (most recent call last):"))
+
+
+def assess_jobs(
+    log_lines: list[str],
+    today_pt: dt.date,
+    yesterday_checkin_text: str,
+    weekly_text: str,
+) -> list[JobReport]:
+    is_sunday = today_pt.weekday() == 6
+    reports: list[JobReport] = []
+    for name, hhmm, regex, sibling_tool, is_weekly in JOBS:
+        if is_weekly and not is_sunday:
+            reports.append(JobReport(
+                name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
+                section_present=None, section_lines=None, section_note="",
+                skipped_reason="weekly — Sundays only",
+            ))
+            continue
+        match = latest_match(log_lines, regex)
+        if match is None:
+            reports.append(JobReport(
+                name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
+                section_present=False, section_lines=0, section_note="",
+                skipped_reason=None,
+            ))
+            continue
+        _, ts_utc = match
+        ts_pt = ts_utc.astimezone(PT)
+        fired_today = ts_pt.date() == today_pt
+        fired_at = ts_pt.strftime("%H:%M") if fired_today else f"({ts_pt.date().isoformat()})"
+        if is_weekly:
+            present, lines, note = section_info(weekly_text, sibling_tool, today_pt - dt.timedelta(days=today_pt.weekday() + 1))
+            # weekly section's target_date is the week's Sunday — but vault-review
+            # uses ISO week tag. We just look for the section keyed on this week's
+            # Monday for now; if the format differs the line count falls to 0
+            # with section_present=True (close marker found, content empty).
+            # Acceptable v0 — verify after first weekly fire.
+        else:
+            yesterday = today_pt - dt.timedelta(days=1)
+            present, lines, note = section_info(yesterday_checkin_text, sibling_tool, yesterday)
+        reports.append(JobReport(
+            name=name, expected_hhmm=hhmm, fired=fired_today,
+            fired_at_pt=fired_at, section_present=present, section_lines=lines,
+            section_note=note, skipped_reason=None,
+        ))
+    return reports
+
+
+def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count: int) -> str:
+    now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expected = [r for r in reports if r.skipped_reason is None]
+    fired = [r for r in expected if r.fired]
+    yesterday = today_pt - dt.timedelta(days=1)
+    summary = f"_{len(fired)}/{len(expected)} jobs fired today · {traceback_count} tracebacks in log tail_"
+
+    rows = ["| job | fired today | section in yesterday's check-in |",
+            "|---|---|---|"]
+    for r in reports:
+        if r.skipped_reason:
+            rows.append(f"| {r.name} | — | _{r.skipped_reason}_ |")
+            continue
+        if not r.fired:
+            fire_cell = f"❌ never" if r.fired_at_pt is None else f"❌ last: {r.fired_at_pt}"
+        else:
+            fire_cell = f"✓ {r.fired_at_pt} PT"
+        if r.section_present is None:
+            section_cell = "—"
+        elif not r.section_present:
+            section_cell = "❌ missing"
+        else:
+            note = f" ({r.section_note})" if r.section_note else ""
+            section_cell = f"✓ {r.section_lines} lines{note}"
+        rows.append(f"| {r.name} | {fire_cell} | {section_cell} |")
+
+    return "\n".join([
+        f"## auto-review doctor — {today_pt.isoformat()}",
+        "",
+        summary,
+        "",
+        f"_reporting on yesterday's check-in: `journal/checkins/{yesterday.isoformat()}.md`_",
+        "",
+        *rows,
+        "",
+        f"<!-- auto-review-doctor:daily={today_pt.isoformat()} generated_at={now_utc} -->",
+    ]) + "\n"
+
+
+def strip_and_replace(text: str, new_section: str) -> str:
+    om = DOCTOR_MARKER_OPEN.search(text)
+    cm = DOCTOR_MARKER_CLOSE.search(text)
+    if om and cm and om.start() < cm.start():
+        # Replace existing section; preserve trailing newline behavior.
+        before = text[:om.start()]
+        after = text[cm.end():]
+        if after.startswith("\n"):
+            after = after.lstrip("\n")
+            sep = "\n"
+        else:
+            sep = ""
+        return before + new_section + sep + after
+    # Append. Ensure separation from prior content.
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text and not text.endswith("\n\n"):
+        text += "\n"
+    return text + new_section
+
+
+def ensure_checkin(checkin_path: Path, date: dt.date) -> str:
+    if checkin_path.exists():
+        return checkin_path.read_text(encoding="utf-8")
+    # Match the convention from existing check-in notes.
+    iso = date.isoformat()
+    return (
+        f"---\n"
+        f"created: '{iso}'\n"
+        f"date: '{iso}'\n"
+        f"tags:\n"
+        f"- journal/checkin\n"
+        f"---\n"
+        f"\n"
+        f"# check-in — {iso}\n"
+        f"\n"
+    )
+
+
+def iso_week_path(vault: Path, date: dt.date) -> Path:
+    iso_year, iso_week, _ = date.isocalendar()
+    return vault / "journal" / "weekly" / f"{iso_year}-W{iso_week:02d}.md"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="auto-review doctor v0")
+    ap.add_argument("--log", type=Path, default=DEFAULT_LOG, help=f"cron.log path (default: {DEFAULT_LOG})")
+    ap.add_argument("--vault", type=Path, default=DEFAULT_VAULT, help=f"vault root (default: {DEFAULT_VAULT})")
+    ap.add_argument("--date", type=str, default=None, help="override today (YYYY-MM-DD, PT)")
+    ap.add_argument("--tail", type=int, default=TAIL_LINES, help=f"log lines to scan (default: {TAIL_LINES})")
+    ap.add_argument("--dry-run", action="store_true", help="don't write; print to stdout")
+    ap.add_argument("--print", action="store_true", help="also print to stdout when writing")
+    args = ap.parse_args()
+
+    today_pt = (
+        dt.date.fromisoformat(args.date)
+        if args.date
+        else dt.datetime.now(PT).date()
+    )
+    yesterday_pt = today_pt - dt.timedelta(days=1)
+
+    log_lines = tail_lines(args.log, args.tail)
+    checkin_dir = args.vault / "journal" / "checkins"
+    yesterday_path = checkin_dir / f"{yesterday_pt.isoformat()}.md"
+    today_path = checkin_dir / f"{today_pt.isoformat()}.md"
+    weekly_path = iso_week_path(args.vault, today_pt)
+
+    yesterday_text = yesterday_path.read_text(encoding="utf-8") if yesterday_path.exists() else ""
+    weekly_text = weekly_path.read_text(encoding="utf-8") if weekly_path.exists() else ""
+
+    reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text)
+    tracebacks = count_tracebacks(log_lines)
+    section = render_section(today_pt, reports, tracebacks)
+
+    if args.dry_run:
+        sys.stdout.write(section)
+        return 0
+
+    today_text = ensure_checkin(today_path, today_pt)
+    new_text = strip_and_replace(today_text, section)
+    today_path.parent.mkdir(parents=True, exist_ok=True)
+    today_path.write_text(new_text, encoding="utf-8")
+
+    if args.print:
+        sys.stdout.write(section)
+    print(f"auto-review-doctor: wrote section → {today_path}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
