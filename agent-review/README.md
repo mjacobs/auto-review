@@ -24,6 +24,7 @@ uv run agent-review yesterday
 
 - `src/agent_review/` — package
 - `migrations/` — SQL for the `agent_review` schema
+- `deploy/` — openclaw cron wrapper and install notes
 - `tests/` — pytest
 - `DESIGN.md` — design doc
 
