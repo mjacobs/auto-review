@@ -18,3 +18,6 @@ uv.lock
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Beads task tracker (local-only)
+.beads/
