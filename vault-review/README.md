@@ -1,11 +1,41 @@
 # vault-review
 
-Daily and weekly narrative recaps of vault activity, derived deterministically
-from `git diff` over the Obsidian vault, written idempotently into the vault.
+Deterministic daily and weekly recaps of what changed in an Obsidian
+vault, derived from `git log` and written idempotently into the vault's
+own check-in note.
 
-Sibling of [agent-review](../agent-review/). See [DESIGN.md](./DESIGN.md)
-for design rationale and [docs/history/PLAN.md](./docs/history/PLAN.md)
-for the original implementation log.
+**Status:** stable, in daily production since 2026-04.
+
+No LLM, no external service — just `git log` → markdown → idempotent
+file write. Sibling of [`agent-review`](../agent-review/) and
+[`memex-review`](../memex-review/). See [`DESIGN.md`](./DESIGN.md) for
+the full design and [`docs/history/PLAN.md`](./docs/history/PLAN.md) for
+the original implementation log.
+
+## What you get
+
+Running `vault-review today` appends a section like this to
+`journal/checkins/YYYY-MM-DD.md`:
+
+```markdown
+## vault-review — 2026-05-14
+
+_window: 2026-05-14_
+
+### projects
+- `~` `projects/auto-review/auto-review.md` — added two follow-up issues
+- `+` `projects/serverless-memex/release-notes.md` — drafted the v1 cut
+
+### journal
+- `~` `journal/checkins/2026-05-13.md` — yesterday's notes
+- `↻` `journal/inbox/idea.md` (renamed from `journal/inbox/2026-05-13-idea.md`)
+
+<!-- vault-review:daily=2026-05-14 generated_at=2026-05-15T04:00:00Z -->
+```
+
+Files are grouped by top-level vault folder. The `<!-- vault-review:… -->`
+marker is what makes re-runs strip-and-replace safe: hand edits anywhere
+outside the marked block survive.
 
 ## Install
 
@@ -54,28 +84,35 @@ vault-review run today --dry-run --print   # both
 
 Set via environment or `.env` in the working directory:
 
-| Variable | Default | Description |
-|---|---|---|
-| `VAULT_PATH` | `~/vault` | Absolute path to the Obsidian vault git repo |
-| `TZ` | `America/Los_Angeles` | Timezone for "today" / "yesterday" resolution |
+| Variable     | Default                 | Description                                       |
+| ------------ | ----------------------- | ------------------------------------------------- |
+| `VAULT_PATH` | `~/vault`               | Absolute path to the Obsidian vault git repo      |
+| `TZ`         | `America/Los_Angeles`   | Timezone for "today" / "yesterday" resolution     |
 
 ## Output
 
-Daily sections land in `journal/checkins/YYYY-MM-DD.md`, weekly sections in
-`journal/weekly/YYYY-W##.md`. Both files are created with standard frontmatter
-if absent. Sections are idempotent: re-running replaces the marked block in
-place; human edits outside the block survive.
+Daily sections land in `journal/checkins/YYYY-MM-DD.md`, weekly sections
+in `journal/weekly/YYYY-W##.md`. Both files are created with standard
+frontmatter if absent. Sections are idempotent: re-running replaces the
+marked block in place; human edits outside the block survive.
 
 Marker format:
+
 ```
 <!-- vault-review:daily=2026-05-14 generated_at=2026-05-15T04:00:00Z -->
-<!-- vault-review:weekly=2026-W20 generated_at=2026-05-15T04:00:00Z -->
+<!-- vault-review:weekly=2026-W19 generated_at=2026-05-15T04:00:00Z -->
 ```
 
 ## Development
 
 ```bash
-uv sync
+uv sync --group dev
 uv run pytest
 uv run vault-review --help
 ```
+
+## See also
+
+- [`DESIGN.md`](./DESIGN.md) — design rationale, idempotency story, denylist.
+- [`docs/history/PLAN.md`](./docs/history/PLAN.md) — original implementation log.
+- [`deploy/`](./deploy/) — cron wrapper for unattended daily runs.
