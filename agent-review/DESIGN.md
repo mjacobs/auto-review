@@ -24,7 +24,7 @@ check-in note.
 
 ## Source data
 
-Live database: `POSTGRES_HOST:5432/agentsview` · schema `agentsview`.
+Live database: a Postgres instance (typically `<pg-host>:5432/agentsview`) · schema `agentsview`.
 
 | Table                | Role                                                        |
 |----------------------|-------------------------------------------------------------|
@@ -351,8 +351,8 @@ synthesis.
 
 ## Open questions
 
-1. **Timezone** for the day boundary — your sessions span baox, openclaw-claw,
-   openclaw machines but you appear to be in one TZ. Default to `$TZ` /
+1. **Timezone** for the day boundary — sessions may span several machines
+   but a single human operator is typically in one TZ. Default to `$TZ` /
    `America/Los_Angeles`?
 2. **`project` field** is noisy (`workspace`/`mj` catch-alls). Should the
    digest infer project from `cwd` + `git_branch` when those are present?
@@ -365,7 +365,7 @@ synthesis.
    rows; some agents (codex, gemini) may not. Confirm fold-into-parent is
    correct for all agents, or keep some agent-specific behavior.
 5. **Secrets handling** — first-user-message can include pasted file content
-   (saw `.openclaw/openclaw.json` with creds). Want a redaction pass
+   (agent CLI config files routinely carry credentials). Want a redaction pass
    before sending to Anthropic? Recommend: **yes, basic regex redactor**
    (`AKIA…`, `gh[ps]_…`, `sk-…`, `ANTHROPIC_API_KEY=…`, `password=…`,
    `.pgpass`-style lines).

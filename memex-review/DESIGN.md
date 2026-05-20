@@ -141,7 +141,7 @@ src/memex_review/
 - **No weekly recap.** Daily-only matches the project doc's proposed output;
   add `run-weekly` when there's a reason.
 - **No LLM.** Deterministic grouping is enough for v1.
-- **No git commit/push.** Lives in the openclaw cron wrapper, same as the
+- **No git commit/push.** Lives in the cron wrapper, same as the
   other siblings.
 - **No Postgres.** Captures live in cf-memex's D1; we read on demand.
 

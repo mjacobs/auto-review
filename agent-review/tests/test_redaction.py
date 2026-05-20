@@ -207,12 +207,12 @@ class TestBearerTokens:
 
 class TestPgpass:
     def test_pgpass_line(self):
-        text = "POSTGRES_HOST:5432:agentsview:mj:supersecretdbpassword"
+        text = "198.51.100.22:5432:exampledb:exampleuser:supersecretdbpassword"
         result = redact(text)
         assert "supersecretdbpassword" not in result
         assert "«REDACTED:password»" in result
         # The first four fields should be preserved
-        assert "POSTGRES_HOST:5432:agentsview:mj:" in result
+        assert "198.51.100.22:5432:exampledb:exampleuser:" in result
 
     def test_pgpass_wildcard_host(self):
         text = "*:5432:*:postgres:anotherpassword"
@@ -305,7 +305,7 @@ class TestIdempotency:
         "AKIAIOSFODNN7EXAMPLE",
         "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
         "xoxb-1234567890-abcdefghij",
-        "POSTGRES_HOST:5432:mydb:mj:s3cret",
+        "198.51.100.22:5432:mydb:exampleuser:s3cret",
         "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload",
         (
             "-----BEGIN RSA PRIVATE KEY-----\n"

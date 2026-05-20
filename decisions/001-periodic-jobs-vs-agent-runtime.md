@@ -13,6 +13,19 @@ status: proposed
 **relates to**: `auto-review-906` (north star — single checkin-assembler); `vault-agent/decisions/006-checkin-to-delta-recap` (the pivot that made these workloads deterministic)
 **depends on**: nothing — but execution of any consequence depends on the bd issue this ADR opens (host-model discovery)
 
+> **Context for outside readers.** This ADR refers to several
+> project-specific names that aren't otherwise defined in this repo:
+> - **openclaw** — the home-lab Linux host (an internal LAN box) that
+>   currently runs both the auto-review periodic cron jobs *and* an
+>   always-on agent runtime. The conflation between those two roles is
+>   exactly what this ADR exists to untangle.
+> - **vault-agent** — an earlier in-vault prototype that produced the
+>   recap workloads later extracted into `auto-review/`.
+> - **Hermes / openclaw-cli** — adjacent agent-platform tooling that
+>   shares the host but not the workload.
+> The names are kept here because the ADR is about a real decision
+> tied to specific runtimes; generalizing them would lose the point.
+
 ## context
 
 The auto-review siblings (vault-review, memex-review, agent-review, doctor) all run on openclaw — the OPENCLAW_HOST box that also hosts the openclaw agent runtime and (in `mj@openclaw`) the Hermes agent runtime. The hosting choice was inherited, not chosen: vault-agent was the first periodic job in the family, and it lived on openclaw because openclaw was already where unattended LLM-calling work happened. Its siblings followed the address without re-asking the question.

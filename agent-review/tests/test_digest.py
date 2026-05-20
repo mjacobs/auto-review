@@ -31,7 +31,7 @@ def _bundle(session_id: str = "parent") -> SessionBundle:
         machine="workstation",
         project="auto-review",
         project_source="cwd",
-        cwd="/home/mj/dev/projects/auto-review",
+        cwd="/home/user/projects/auto-review",
         git_branch="main",
         started_at=dt.datetime(2026, 5, 16, 12, 0, tzinfo=dt.UTC),
         ended_at=dt.datetime(2026, 5, 16, 12, 30, tzinfo=dt.UTC),

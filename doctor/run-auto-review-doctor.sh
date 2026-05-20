@@ -5,12 +5,12 @@
 # writes a health section into today's check-in note, then commits + pushes
 # any resulting markdown change in the vault.
 #
-# Installed on openclaw at ~/.local/bin/run-auto-review-doctor and invoked
-# from the user crontab. The `auto-review-doctor` python script (sibling
-# file in this dir, deployed to ~/.local/bin/) must also be on PATH.
+# Installed at ~/.local/bin/run-auto-review-doctor on the cron host and
+# invoked from the user crontab. The `auto-review-doctor` python script
+# (sibling file in this dir, deployed to ~/.local/bin/) must also be on PATH.
 #
 # Cron line (gated on user confirmation per AGENTS.md):
-#   1 22 * * *  run-auto-review-doctor  >> ~/.local/state/vault-agent/cron.log 2>&1
+#   1 22 * * *  run-auto-review-doctor  >> ~/.local/state/auto-review/cron.log 2>&1
 # 22:01 PT is ≥30 min after memex-review's 20:31 fire so the doctor sees
 # today's daily run results.
 

@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-# scripts/deploy.sh — deploy an auto-review sibling tool to openclaw.
+# scripts/deploy.sh — deploy an auto-review sibling tool to a cron host.
 #
 # Usage:
-#   ./scripts/deploy.sh <tool>
-#   ./scripts/deploy.sh agent-review
-#   ./scripts/deploy.sh vault-review
-#   ./scripts/deploy.sh memex-review
+#   CRON_HOST=user@host ./scripts/deploy.sh <tool>
+#   CRON_HOST=user@host ./scripts/deploy.sh agent-review
+#   CRON_HOST=user@host ./scripts/deploy.sh vault-review
+#   CRON_HOST=user@host ./scripts/deploy.sh memex-review
+#
+# Required env:
+#   CRON_HOST   ssh target for the cron host (e.g. "user@host" or an ssh
+#               alias from ~/.ssh/config). Must accept BatchMode=yes — i.e.
+#               key-based auth must be configured.
 #
 # What it does:
 #   1. cd into <tool>/, run `uv build`
-#   2. scp the built wheel to openclaw:/tmp/
-#   3. scp deploy/run-<wrapper>-daily.sh to openclaw:/tmp/ (if present)
-#   4. ssh openclaw: uv tool install --reinstall; mv wrapper to ~/.local/bin/; chmod +x
+#   2. scp the built wheel to $CRON_HOST:/tmp/
+#   3. scp deploy/run-<wrapper>-daily.sh to $CRON_HOST:/tmp/ (if present)
+#   4. ssh $CRON_HOST: uv tool install --reinstall; mv wrapper to ~/.local/bin/; chmod +x
 #   5. Print secret-presence audit (counts only, never values)
 #   6. Print the expected cron line for manual installation
 #
 # Hard constraints respected:
-#   - Does NOT edit openclaw crontab (prints line for user to install)
-#   - Does NOT write to openclaw:~/.secrets (prints presence audit only)
+#   - Does NOT edit the remote crontab (prints line for user to install)
+#   - Does NOT write to $CRON_HOST:~/.secrets (prints presence audit only)
 #   - Idempotent: --reinstall for uv tool, mv -f for wrapper
 #   - ssh/scp use -o BatchMode=yes (non-interactive; fails cleanly if no key)
 #
@@ -30,12 +35,11 @@ set -euo pipefail
 # Config
 # ---------------------------------------------------------------------------
 
-OPENCLAW_HOST="openclaw@OPENCLAW_HOST"
+: "${CRON_HOST:?CRON_HOST must be set, e.g. 'CRON_HOST=user@host ./scripts/deploy.sh <tool>'}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Tool metadata: wrapper name, cron line, required-secret grep patterns,
 # and whether to check ~/.pgpass line count.
-# Format: <wrapper>|<cron-line>|<secret-grep-pattern>|<check-pgpass: 0|1>
 
 declare -A TOOL_WRAPPER=(
   [agent-review]="run-agent-review-daily"
@@ -43,10 +47,12 @@ declare -A TOOL_WRAPPER=(
   [memex-review]="run-memex-review-daily"
 )
 
+# Cron lines use $HOME (escaped) so they resolve at the remote user's
+# home directory regardless of which user the cron host runs as.
 declare -A TOOL_CRON=(
-  [agent-review]="1 21 * * *  run-agent-review-daily  >> /home/openclaw/.local/state/vault-agent/cron.log 2>&1"
-  [vault-review]="1 20 * * *  run-recap-daily          >> /home/openclaw/.local/state/vault-agent/cron.log 2>&1"
-  [memex-review]="31 20 * * *  run-memex-review-daily  >> /home/openclaw/.local/state/vault-agent/cron.log 2>&1"
+  [agent-review]="1 21 * * *  run-agent-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
+  [vault-review]="1 20 * * *  run-recap-daily          >> \$HOME/.local/state/auto-review/cron.log 2>&1"
+  [memex-review]="31 20 * * *  run-memex-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
 )
 
 # Grep patterns to check in ~/.secrets (space-separated list per tool).
@@ -73,7 +79,7 @@ warn() { printf '\033[1;33m warn: %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
-  printf 'Usage: %s <tool>\n' "$(basename "$0")"
+  printf 'Usage: CRON_HOST=user@host %s <tool>\n' "$(basename "$0")"
   printf '  tool: agent-review | vault-review | memex-review\n'
   exit 1
 }
@@ -110,11 +116,11 @@ WHEEL=$(ls -t dist/*.whl 2>/dev/null | head -1)
 ok "Wheel: $WHEEL"
 
 # ---------------------------------------------------------------------------
-# Step 2: scp wheel to openclaw
+# Step 2: scp wheel to $CRON_HOST
 # ---------------------------------------------------------------------------
 
-log "Uploading wheel to openclaw:/tmp/"
-scp -o BatchMode=yes "$WHEEL" "$OPENCLAW_HOST:/tmp/"
+log "Uploading wheel to $CRON_HOST:/tmp/"
+scp -o BatchMode=yes "$WHEEL" "$CRON_HOST:/tmp/"
 ok "Wheel uploaded: $(basename "$WHEEL")"
 
 # ---------------------------------------------------------------------------
@@ -123,8 +129,8 @@ ok "Wheel uploaded: $(basename "$WHEEL")"
 
 HAVE_WRAPPER=0
 if [[ -f "$WRAPPER_SH" ]]; then
-  log "Uploading wrapper script to openclaw:/tmp/"
-  scp -o BatchMode=yes "$WRAPPER_SH" "$OPENCLAW_HOST:/tmp/${WRAPPER}.sh"
+  log "Uploading wrapper script to $CRON_HOST:/tmp/"
+  scp -o BatchMode=yes "$WRAPPER_SH" "$CRON_HOST:/tmp/${WRAPPER}.sh"
   ok "Wrapper uploaded: ${WRAPPER}.sh"
   HAVE_WRAPPER=1
 else
@@ -138,7 +144,7 @@ fi
 WHEEL_BASENAME="$(basename "$WHEEL")"
 
 log "Remote install step"
-printf '\n  This will run on openclaw:\n'
+printf '\n  This will run on %s:\n' "$CRON_HOST"
 printf '    uv tool install --reinstall /tmp/%s\n' "$WHEEL_BASENAME"
 if [[ $HAVE_WRAPPER -eq 1 ]]; then
   printf '    mv -f /tmp/%s.sh ~/.local/bin/%s\n' "$WRAPPER" "$WRAPPER"
@@ -154,26 +160,26 @@ if [[ $HAVE_WRAPPER -eq 1 ]]; then
   REMOTE_CMD+=" && mv -f /tmp/${WRAPPER}.sh \$HOME/.local/bin/${WRAPPER} && chmod +x \$HOME/.local/bin/${WRAPPER}"
 fi
 
-ssh -o BatchMode=yes "$OPENCLAW_HOST" "$REMOTE_CMD"
+ssh -o BatchMode=yes "$CRON_HOST" "$REMOTE_CMD"
 ok "Remote install complete"
 
 # ---------------------------------------------------------------------------
 # Step 5: secret-presence audit (counts only, never values)
 # ---------------------------------------------------------------------------
 
-log "Secret-presence audit on openclaw (counts only, no values printed)"
+log "Secret-presence audit on $CRON_HOST (counts only, no values printed)"
 
 SECRET_PATTERNS="${TOOL_SECRET_PATTERNS[$TOOL]}"
 if [[ -n "$SECRET_PATTERNS" ]]; then
   for pattern in $SECRET_PATTERNS; do
     VAR_NAME="${pattern#^export }"
     VAR_NAME="${VAR_NAME%=}"
-    COUNT=$(ssh -o BatchMode=yes "$OPENCLAW_HOST" \
+    COUNT=$(ssh -o BatchMode=yes "$CRON_HOST" \
       "grep -c '${pattern}' \"\$HOME/.secrets\" 2>/dev/null || echo 0")
     if [[ "$COUNT" -ge 1 ]]; then
       ok "$VAR_NAME present in ~/.secrets ($COUNT line(s))"
     else
-      warn "$VAR_NAME NOT found in openclaw:~/.secrets — provision before running"
+      warn "$VAR_NAME NOT found in $CRON_HOST:~/.secrets — provision before running"
     fi
   done
 else
@@ -181,7 +187,7 @@ else
 fi
 
 if [[ "${TOOL_CHECK_PGPASS[$TOOL]}" -eq 1 ]]; then
-  PGPASS_COUNT=$(ssh -o BatchMode=yes "$OPENCLAW_HOST" \
+  PGPASS_COUNT=$(ssh -o BatchMode=yes "$CRON_HOST" \
     "wc -l < \"\$HOME/.pgpass\" 2>/dev/null || echo 0")
   ok "~/.pgpass: $PGPASS_COUNT line(s) (non-zero = provisioned)"
 fi
@@ -191,7 +197,7 @@ fi
 # ---------------------------------------------------------------------------
 
 printf '\n'
-log "Expected cron entry (add manually via: ssh openclaw crontab -e)"
+log "Expected cron entry (add manually via: ssh $CRON_HOST crontab -e)"
 printf '\n  %s\n\n' "$CRON_LINE"
 warn "Project policy: do NOT auto-edit the crontab. User installs the line above."
 

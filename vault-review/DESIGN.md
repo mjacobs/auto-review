@@ -72,7 +72,7 @@ src/vault_review/
 
 ## What's intentionally out of scope (v1)
 
-**No Telegram, no git commit/push.** The openclaw cron wrapper keeps owning
+**No Telegram, no git commit/push.** The cron wrapper keeps owning
 those side effects. A small shell wrapper (in `deploy/`) calls `vault-review`
 and then does the `git add/commit/push` afterward.
 

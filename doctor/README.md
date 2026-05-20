@@ -71,19 +71,19 @@ _reporting on yesterday's check-in: `journal/checkins/2026-05-17.md`_
 Strip-and-replace is by regex on the open heading + close marker — sibling
 sections and hand-written content outside the doctor block are preserved.
 
-## Deploy (openclaw, gated on user confirmation)
+## Deploy (cron host, gated on user confirmation)
 
 ```bash
 # from this directory:
-scp auto-review-doctor openclaw:~/.local/bin/auto-review-doctor
-scp run-auto-review-doctor.sh openclaw:~/.local/bin/run-auto-review-doctor
-ssh openclaw 'chmod +x ~/.local/bin/auto-review-doctor ~/.local/bin/run-auto-review-doctor'
+scp auto-review-doctor <cron-host>:~/.local/bin/auto-review-doctor
+scp run-auto-review-doctor.sh <cron-host>:~/.local/bin/run-auto-review-doctor
+ssh <cron-host> 'chmod +x ~/.local/bin/auto-review-doctor ~/.local/bin/run-auto-review-doctor'
 
 # smoke test (writes today's check-in, no commit):
-ssh openclaw 'auto-review-doctor --print'
+ssh <cron-host> 'auto-review-doctor --print'
 
 # then add to crontab (CONFIRM WITH USER FIRST, per AGENTS.md):
-#   1 22 * * *  run-auto-review-doctor  >> ~/.local/state/vault-agent/cron.log 2>&1
+#   1 22 * * *  run-auto-review-doctor  >> ~/.local/state/auto-review/cron.log 2>&1
 ```
 
 22:01 PT is ≥30 min after memex-review's 20:31 daily fire, so doctor sees

@@ -1,8 +1,16 @@
-# vault-review — implementation plan
+# vault-review — implementation plan (historical)
 
-Port the `recap` path of `~/vault/tools/vault-agent/vault-agent` into a
-standalone Python package at `~/dev/projects/auto-review/vault-review/`,
-modeled directly on `../agent-review/`.
+> **Note (preserved for context, not a current spec).**
+> This is the original implementation plan that guided the v1 build-out
+> of vault-review. It's kept here as historical context — useful for
+> understanding *why* the codebase looks the way it does, but **not** an
+> accurate description of the tool today. For current usage and design
+> see [`../../README.md`](../../README.md) and
+> [`../../DESIGN.md`](../../DESIGN.md).
+
+Port the `recap` path of an earlier in-vault prototype (`vault-agent`)
+into a standalone Python package at `vault-review/`, modeled directly on
+`../agent-review/`.
 
 ## Goal
 

@@ -5,9 +5,10 @@
 # resulting markdown changes in the vault. Sibling of vault-review's
 # run-recap-daily; pattern lifted from there.
 #
-# Installed on openclaw at ~/.local/bin/run-memex-review-daily and invoked
-# from the user crontab. PATH must include /home/linuxbrew/.linuxbrew/bin
-# so the uv-tool-installed `memex-review` is reachable.
+# Installed at ~/.local/bin/run-memex-review-daily on the cron host and
+# invoked from the user crontab. PATH must include the directory holding
+# the uv-tool-installed `memex-review` binary (commonly ~/.local/bin or
+# /home/linuxbrew/.linuxbrew/bin).
 #
 # Required env (sourced from ~/.secrets if present):
 #   MEMEX_URL

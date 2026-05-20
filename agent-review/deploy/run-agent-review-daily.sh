@@ -5,9 +5,10 @@
 # any resulting markdown changes in the vault. Mirrors the sibling wrappers
 # for vault-review and memex-review.
 #
-# Installed on openclaw at ~/.local/bin/run-agent-review-daily and invoked
-# from the user crontab. PATH must include /home/linuxbrew/.linuxbrew/bin
-# so the uv-tool-installed `agent-review` is reachable.
+# Installed at ~/.local/bin/run-agent-review-daily on the cron host and
+# invoked from the user crontab. PATH must include the directory holding
+# the uv-tool-installed `agent-review` binary (commonly ~/.local/bin or
+# /home/linuxbrew/.linuxbrew/bin).
 #
 # Required env (sourced from ~/.secrets if present):
 #   PG_DSN

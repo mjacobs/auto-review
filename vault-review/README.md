@@ -4,7 +4,8 @@ Daily and weekly narrative recaps of vault activity, derived deterministically
 from `git diff` over the Obsidian vault, written idempotently into the vault.
 
 Sibling of [agent-review](../agent-review/). See [DESIGN.md](./DESIGN.md)
-for design rationale and [PLAN.md](./PLAN.md) for implementation history.
+for design rationale and [docs/history/PLAN.md](./docs/history/PLAN.md)
+for the original implementation log.
 
 ## Install
 
