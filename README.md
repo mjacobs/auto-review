@@ -121,7 +121,7 @@ deployment recipe.
 | :------------ | :-------------------- | :------------------ |
 | `vault-review` | Stable, in production | 2026-04             |
 | `memex-review` | Stable, in production | 2026-05             |
-| `agent-review` | Beta — `today` works end-to-end; cron deploy parked behind digest-cost tuning | not yet daily       |
+| `agent-review` | Beta — `today` works end-to-end; cron deploy gated on credential-hygiene (dedicated PG user + Anthropic key) | not yet daily       |
 
 ## Related projects
 

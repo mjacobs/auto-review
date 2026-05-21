@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     pg_dsn: SecretStr = Field(..., alias="PG_DSN")
     anthropic_api_key: SecretStr = Field(..., alias="ANTHROPIC_API_KEY")
+    anthropic_base_url: str | None = Field(None, alias="ANTHROPIC_BASE_URL")
     vault_path: Path = Field(Path.home() / "vault", alias="VAULT_PATH")
     tz_name: str = Field("America/Los_Angeles", alias="TZ")
     model_digest: str = Field("claude-haiku-4-5-20251001", alias="MODEL_DIGEST")

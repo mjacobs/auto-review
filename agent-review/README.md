@@ -5,8 +5,12 @@ LLM-synthesized daily narrative report of activity across agent CLIs
 unified `agentsview` Postgres schema and written idempotently into the
 Obsidian check-in note.
 
-**Status:** beta — `today` works end-to-end; cron-deployment parked
-behind digest-cost tuning.
+**Status:** beta — `today` works end-to-end. Steady-state cost is ~$0.06/day
+(~$22/year); the long-term cheaper-alternative exploration is tracked but
+not blocking. Cron deployment is gated on two credential-hygiene tasks:
+provisioning a dedicated Postgres user (no longer reusing admin in
+`.pgpass`) and a dedicated Anthropic-shaped key (no longer reusing the
+shared `MAIN_ANTHROPIC_TOKEN`).
 
 Sibling of [`vault-review`](../vault-review/) and
 [`memex-review`](../memex-review/). The only sibling that does LLM
@@ -82,14 +86,41 @@ cache is what makes mid-day re-runs cheap.
 
 All via environment or `.env`:
 
-| Variable             | Default                              | Description                                                          |
-| -------------------- | ------------------------------------ | -------------------------------------------------------------------- |
-| `PG_DSN`             | _(required)_                         | Postgres DSN for `agentsview`; omit password to use `PGPASSFILE` / `~/.pgpass` |
-| `ANTHROPIC_API_KEY`  | _(required)_                         | Anthropic API key                                                    |
-| `VAULT_PATH`         | `~/vault`                            | Obsidian vault root                                                  |
-| `TZ`                 | `America/Los_Angeles`                | Timezone for day boundaries                                          |
-| `MODEL_DIGEST`       | `claude-haiku-4-5-20251001`          | Model for per-session digests                                        |
-| `MODEL_SYNTH`        | `claude-sonnet-4-6`                  | Model for daily narrative synthesis                                  |
+| Variable              | Default                              | Description                                                          |
+| --------------------- | ------------------------------------ | -------------------------------------------------------------------- |
+| `PG_DSN`              | _(required)_                         | Postgres DSN for `agentsview`; omit password to use `PGPASSFILE` / `~/.pgpass` |
+| `ANTHROPIC_API_KEY`   | _(required)_                         | API key sent as `x-api-key`. When `ANTHROPIC_BASE_URL` is set this is a LiteLLM virtual key; otherwise a real Anthropic key |
+| `ANTHROPIC_BASE_URL`  | _(unset → api.anthropic.com)_        | Override Anthropic SDK base URL. Set to a LiteLLM gateway (e.g. `http://PORTAINER_HOST:4000`) to route through the homelab gateway with a per-client virtual key |
+| `VAULT_PATH`          | `~/vault`                            | Obsidian vault root                                                  |
+| `TZ`                  | `America/Los_Angeles`                | Timezone for day boundaries                                          |
+| `MODEL_DIGEST`        | `claude-haiku-4-5-20251001`          | Model for per-session digests. Must match a model registered on the gateway when `ANTHROPIC_BASE_URL` is set |
+| `MODEL_SYNTH`         | `claude-sonnet-4-6`                  | Model for daily narrative synthesis. Same gateway-registration caveat as `MODEL_DIGEST` |
+
+### Routing via LiteLLM (recommended for unattended cron)
+
+Setting `ANTHROPIC_BASE_URL` points the Anthropic SDK at a LiteLLM gateway,
+which translates `/v1/messages` to whatever backend the model alias maps
+to (Anthropic, OpenAI, Gemini, or a local llama.cpp/vLLM host). Benefits:
+
+- **Credential isolation.** Cron host holds a LiteLLM virtual key scoped
+  to agent-review, not the shared `ANTHROPIC_API_KEY`. Revoking the
+  cron's access is one gateway call.
+- **Per-client logging and rate limits** via the gateway.
+- **Backend flexibility.** Swap `MODEL_DIGEST` / `MODEL_SYNTH` to a local
+  alias (e.g. `local-fast`, `local-long`) without touching agent-review.
+
+Example cron-host `.env` fragment:
+
+```env
+ANTHROPIC_BASE_URL=http://PORTAINER_HOST:4000
+ANTHROPIC_API_KEY=sk-<litellm-virtual-key-for-agent-review>
+MODEL_DIGEST=claude-haiku-4-5-20251001    # or e.g. local-fast
+MODEL_SYNTH=claude-sonnet-4-6             # or e.g. local-long
+```
+
+The model names must be registered on the gateway. The default
+`claude-*` IDs assume the gateway has Anthropic models added to its
+model list; if not, use one of the gateway's existing aliases.
 
 ## Output
 

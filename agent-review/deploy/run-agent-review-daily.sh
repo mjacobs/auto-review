@@ -11,13 +11,18 @@
 # /home/linuxbrew/.linuxbrew/bin).
 #
 # Required env (sourced from ~/.secrets if present):
-#   PG_DSN
-#   ANTHROPIC_API_KEY
+#   PG_DSN                 — recommend dedicated `agent_review` PG user, not admin
+#   ANTHROPIC_API_KEY      — when ANTHROPIC_BASE_URL is set, this is a LiteLLM
+#                            virtual key; otherwise a real Anthropic key.
 # Optional env:
+#   ANTHROPIC_BASE_URL     — e.g. http://PORTAINER_HOST:4000 to route through
+#                            the homelab LiteLLM gateway. Recommended for
+#                            unattended cron: keeps the shared Anthropic key
+#                            off the cron host.
 #   VAULT_PATH
 #   TZ
-#   MODEL_DIGEST
-#   MODEL_SYNTH
+#   MODEL_DIGEST           — must be registered on the gateway when ANTHROPIC_BASE_URL is set
+#   MODEL_SYNTH            — same as MODEL_DIGEST
 #   PGPASSFILE
 
 set -euo pipefail
