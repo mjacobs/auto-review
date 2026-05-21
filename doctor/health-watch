@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""auto-review health-watch — daily LLM-driven investigation.
+
+Reads the bundled known-landmines playbook (HEALTH-WATCH-CONTEXT.md),
+yesterday's and today's check-in notes, and the cron.log tail. Sends
+all of it to Claude via the homelab LiteLLM gateway with a default-
+suspicion instruction set. Writes a marker-bracketed `## health-watch`
+section into today's check-in note (idempotent). Exits 0 on GREEN,
+2 on NON-GREEN — the wrapper uses the exit code to alert.
+
+stdlib-only on purpose (urllib for the LLM call). Mirrors the doctor's
+single-file deploy shape.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
+
+PT = ZoneInfo("America/Los_Angeles")
+UTC = ZoneInfo("UTC")
+
+DEFAULT_LOG = Path.home() / ".local/state/vault-agent/cron.log"
+DEFAULT_VAULT = Path.home() / "vault"
+TAIL_LINES = 1000
+DEFAULT_MODEL = "claude-sonnet-4-6"
+HTTP_TIMEOUT_SEC = 180
+
+OPEN_MARKER = re.compile(r"^## health-watch — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
+CLOSE_MARKER = re.compile(
+    r"^<!-- health-watch:daily=\d{4}-\d{2}-\d{2} generated_at=\S+ -->$",
+    re.MULTILINE,
+)
+
+
+def find_context_path() -> Path:
+    """Resolve the HEALTH-WATCH-CONTEXT.md playbook.
+
+    Order of preference: env override → deployed share dir → sibling of
+    this script (development mode running from the repo).
+    """
+    env = os.environ.get("HEALTH_WATCH_CONTEXT")
+    if env:
+        return Path(env)
+    deployed = Path.home() / ".local/share/auto-review/HEALTH-WATCH-CONTEXT.md"
+    if deployed.exists():
+        return deployed
+    return Path(__file__).resolve().parent / "HEALTH-WATCH-CONTEXT.md"
+
+
+def tail_lines(path: Path, n: int) -> list[str]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        return f.readlines()[-n:]
+
+
+def call_llm(prompt: str, model: str) -> str:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        sys.exit("ANTHROPIC_API_KEY not set")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+    url = f"{base_url}/v1/messages"
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = Request(url, data=body, method="POST", headers={
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    })
+    try:
+        with urlopen(req, timeout=HTTP_TIMEOUT_SEC) as r:
+            data = json.loads(r.read())
+    except HTTPError as e:
+        sys.exit(f"LLM call failed: HTTP {e.code}\n{e.read().decode(errors='replace')}")
+    except URLError as e:
+        sys.exit(f"LLM call failed: {e.reason}")
+    parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+    if not parts:
+        sys.exit(f"LLM returned no text content:\n{json.dumps(data)[:500]}")
+    return "\n".join(parts)
+
+
+PROMPT_TEMPLATE = """You are the auto-review health-watch. A daily LLM-driven
+investigation of a four-job homelab pipeline. Read the bundled known-landmines
+playbook, then the two most recent check-in notes and the cron.log tail.
+Investigate against the playbook. Default to suspicion. No assumptions.
+
+<playbook>
+{context}
+</playbook>
+
+<today_checkin path="{today_path}">
+{today_checkin}
+</today_checkin>
+
+<yesterday_checkin path="{yesterday_path}">
+{yesterday_checkin}
+</yesterday_checkin>
+
+<cron_log_tail lines="{tail_lines}" path="{log_path}">
+{cron_log}
+</cron_log_tail>
+
+Respond with EXACTLY this XML structure and nothing else. Do not wrap in
+code fences. The <section> contents will be written verbatim into the
+day's check-in note.
+
+<section>
+## health-watch — {today_iso}
+
+_<one-line verdict — be specific, e.g. "GREEN — all 4 jobs fired, 0 new tracebacks, cost $0.09" or "NON-GREEN — agent-review missing from 2026-05-20">_
+
+### landmines
+
+- L1 OAuth/API-key 401: <status with evidence>
+- L2 portainer/LiteLLM autostart: <status with evidence>
+- L3 traceback-count drain: <count today vs prior, drain trend>
+- L4 vault-review recursion: <status with evidence>
+- L5 agent-review code skew: <status with evidence>
+- L6 cost runaway: <observed cost line, threshold check>
+- L7 memex 0-captures: <status — GREEN if 0 captures + section well-formed>
+- L8 vault git push: <status with evidence>
+- L9 PG reachability: <status with evidence>
+
+### siblings (yesterday's check-in)
+
+- vault-review: <present/missing, lines, sanity>
+- memex-review: <present/missing, lines, sanity>
+- agent-review: <present/missing, lines, sanity>
+- doctor: <present/missing, lines, sanity>
+
+### new signals
+
+<any unfamiliar log content or check-in anomalies, with quoted evidence — or "none">
+
+### follow-up
+
+<bullet list of recommended next actions, or "none — all green">
+
+<!-- health-watch:daily={today_iso} generated_at={now_utc} -->
+</section>
+
+<verdict>GREEN</verdict> or <verdict>NON-GREEN</verdict>
+
+<findings>
+<short summary suitable for an alert: the one or two things that made
+this NON-GREEN, with the strongest piece of evidence each. Empty if GREEN.>
+</findings>
+"""
+
+
+def build_prompt(
+    context_text: str,
+    today_text: str,
+    yesterday_text: str,
+    log_lines: list[str],
+    today_iso: str,
+    yesterday_iso: str,
+    today_path: Path,
+    yesterday_path: Path,
+    log_path: Path,
+    now_utc: str,
+    tail_n: int,
+) -> str:
+    return PROMPT_TEMPLATE.format(
+        context=context_text,
+        today_path=str(today_path),
+        today_checkin=today_text or "(file does not exist yet)",
+        yesterday_path=str(yesterday_path),
+        yesterday_checkin=yesterday_text or "(file does not exist)",
+        log_path=str(log_path),
+        cron_log="".join(log_lines) or "(empty log tail)",
+        today_iso=today_iso,
+        yesterday_iso=yesterday_iso,
+        now_utc=now_utc,
+        tail_lines=tail_n,
+    )
+
+
+def parse_response(body: str) -> tuple[str, str, str]:
+    section_m = re.search(r"<section>(.*?)</section>", body, re.DOTALL)
+    verdict_m = re.search(r"<verdict>\s*(GREEN|NON-GREEN)\s*</verdict>", body)
+    findings_m = re.search(r"<findings>(.*?)</findings>", body, re.DOTALL)
+    if not section_m or not verdict_m:
+        sys.exit(f"health-watch: LLM output malformed; could not parse section/verdict:\n{body[:2000]}")
+    return (
+        section_m.group(1).strip() + "\n",
+        verdict_m.group(1),
+        (findings_m.group(1).strip() if findings_m else ""),
+    )
+
+
+def strip_and_replace(text: str, new_section: str) -> str:
+    om = OPEN_MARKER.search(text)
+    cm = CLOSE_MARKER.search(text)
+    if om and cm and om.start() < cm.start():
+        before = text[:om.start()]
+        after = text[cm.end():]
+        if after.startswith("\n"):
+            after = after.lstrip("\n")
+            sep = "\n"
+        else:
+            sep = ""
+        return before + new_section + sep + after
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text and not text.endswith("\n\n"):
+        text += "\n"
+    return text + new_section
+
+
+def ensure_checkin(checkin_path: Path, date: dt.date) -> str:
+    if checkin_path.exists():
+        return checkin_path.read_text(encoding="utf-8")
+    iso = date.isoformat()
+    return (
+        f"---\n"
+        f"created: '{iso}'\n"
+        f"date: '{iso}'\n"
+        f"tags:\n"
+        f"- journal/checkin\n"
+        f"---\n"
+        f"\n"
+        f"# check-in — {iso}\n"
+        f"\n"
+    )
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="auto-review health-watch")
+    ap.add_argument("--log", type=Path, default=DEFAULT_LOG)
+    ap.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    ap.add_argument("--context", type=Path, default=None,
+                    help="HEALTH-WATCH-CONTEXT.md path (default: deployed share dir or sibling of this script)")
+    ap.add_argument("--date", type=str, default=None, help="override today (YYYY-MM-DD, PT)")
+    ap.add_argument("--tail", type=int, default=TAIL_LINES)
+    ap.add_argument("--model", type=str, default=os.environ.get("HEALTH_WATCH_MODEL", DEFAULT_MODEL))
+    ap.add_argument("--dry-run", action="store_true", help="don't write the section; print to stdout")
+    ap.add_argument("--print", action="store_true", help="also print to stdout when writing")
+    args = ap.parse_args()
+
+    today_pt = (
+        dt.date.fromisoformat(args.date)
+        if args.date
+        else dt.datetime.now(PT).date()
+    )
+    yesterday_pt = today_pt - dt.timedelta(days=1)
+    now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    context_path = args.context or find_context_path()
+    if not context_path.exists():
+        sys.exit(f"context playbook not found: {context_path}")
+    context_text = context_path.read_text(encoding="utf-8")
+
+    checkin_dir = args.vault / "journal" / "checkins"
+    today_path = checkin_dir / f"{today_pt.isoformat()}.md"
+    yesterday_path = checkin_dir / f"{yesterday_pt.isoformat()}.md"
+    today_text = today_path.read_text(encoding="utf-8") if today_path.exists() else ""
+    yesterday_text = yesterday_path.read_text(encoding="utf-8") if yesterday_path.exists() else ""
+    log_lines = tail_lines(args.log, args.tail)
+
+    prompt = build_prompt(
+        context_text=context_text,
+        today_text=today_text,
+        yesterday_text=yesterday_text,
+        log_lines=log_lines,
+        today_iso=today_pt.isoformat(),
+        yesterday_iso=yesterday_pt.isoformat(),
+        today_path=today_path,
+        yesterday_path=yesterday_path,
+        log_path=args.log,
+        now_utc=now_utc,
+        tail_n=args.tail,
+    )
+
+    response = call_llm(prompt, args.model)
+    section, verdict, findings = parse_response(response)
+
+    if args.dry_run:
+        sys.stdout.write(section)
+        sys.stderr.write(f"\n[verdict={verdict}]\n")
+        if verdict == "NON-GREEN" and findings:
+            sys.stderr.write(f"---findings---\n{findings}\n")
+        return 0 if verdict == "GREEN" else 2
+
+    body = ensure_checkin(today_path, today_pt)
+    today_path.parent.mkdir(parents=True, exist_ok=True)
+    today_path.write_text(strip_and_replace(body, section), encoding="utf-8")
+
+    if args.print:
+        sys.stdout.write(section)
+
+    if verdict == "NON-GREEN":
+        if findings:
+            sys.stderr.write(f"health-watch NON-GREEN findings:\n{findings}\n")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,4 +1,71 @@
-# auto-review doctor (v0)
+# doctor + health-watch
+
+Cron-side health surface for the auto-review pipeline. Two tools in
+this directory:
+
+- **`auto-review-doctor`** (v0) — deterministic daily liveness check.
+  Counts "did each job fire and write a section?" and surfaces the
+  result as a table in today's check-in.
+- **`health-watch`** — LLM-driven daily investigation against a
+  bundled known-landmines playbook, gated to GREEN / NON-GREEN with
+  evidence. Lives alongside the doctor until the pipeline is
+  verifiably smooth.
+
+---
+
+## health-watch — LLM-driven daily investigation
+
+A second daily check that complements the deterministic doctor. Where
+the doctor counts "did each job fire and write a section?", the
+health-watch asks Claude (via the homelab LiteLLM gateway) to verify
+against a bundled known-landmines playbook
+([`HEALTH-WATCH-CONTEXT.md`](./HEALTH-WATCH-CONTEXT.md)) and produce
+an evidence-backed GREEN/NON-GREEN verdict.
+
+Files:
+
+| file | role |
+|---|---|
+| `health-watch` | executable Python (stdlib + urllib for the API call); reads context + check-ins + cron.log, calls `/v1/messages`, writes a marker-bracketed `## health-watch — YYYY-MM-DD` section into today's check-in |
+| `HEALTH-WATCH-CONTEXT.md` | bundled playbook of known landmines; extend this file as new failure modes appear |
+| `run-health-watch-daily.sh` | bash cron wrapper; sources `~/.secrets`, runs the script, commits + pushes the vault, propagates the GREEN/NON-GREEN exit code |
+
+Cron line (08:00 PT — after the 22:01 PT doctor has settled overnight):
+
+```
+0 8 * * *  run-health-watch-daily  >> ~/.local/state/vault-agent/cron.log 2>&1
+```
+
+Required env (on the cron host, in `~/.secrets`):
+
+- `ANTHROPIC_API_KEY` — a LiteLLM virtual key
+- `ANTHROPIC_BASE_URL` — e.g. `http://PORTAINER_HOST:4000`
+
+Optional: `HEALTH_WATCH_MODEL` (default `claude-sonnet-4-6`),
+`HEALTH_WATCH_CONTEXT` (override the playbook path),
+`VAULT_PATH` (default `~/vault`).
+
+Exit codes: 0 GREEN, 2 NON-GREEN (still wrote + pushed the section),
+other = hard failure.
+
+Local development:
+
+```bash
+ANTHROPIC_API_KEY=<litellm-virtual-key> \
+ANTHROPIC_BASE_URL=http://PORTAINER_HOST:4000 \
+./health-watch --log ~/path/to/cron.log --vault ~/vault --dry-run
+```
+
+### Promotion plan
+
+Lives until the pipeline is verifiably smooth — roughly one week of
+clean GREEN verdicts. After that, re-evaluate whether to retire it,
+fold its checks into the doctor, or keep it running as a permanent
+second-line check.
+
+---
+
+## auto-review doctor (v0)
 
 Daily health check for the auto-review sibling crons. Reads
 `~/.local/state/vault-agent/cron.log` + yesterday's check-in note,
