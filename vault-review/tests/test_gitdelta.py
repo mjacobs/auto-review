@@ -28,9 +28,10 @@ def vault_repo(tmp_path: Path) -> Path:
     """A minimal git repo that mimics the vault directory layout.
 
     Commits:
-      T-2 days: add journal/checkins/2026-05-12.md
-      T-1 days: add journal/checkins/2026-05-13.md, modify projects/foo/bar.md
-      T+0 days: add journal/checkins/2026-05-14.md, add .obsidian/workspace (denied)
+      T-2 days: add journal/checkins/2026-05-12.md (denied), add notes/a.md
+      T-1 days: add journal/checkins/2026-05-13.md (denied), add projects/foo/bar.md
+      T+0 days: add journal/checkins/2026-05-14.md (denied), add notes/b.md,
+                add .obsidian/workspace (denied)
     """
     repo = tmp_path / "vault"
     repo.mkdir()
@@ -52,11 +53,13 @@ def vault_repo(tmp_path: Path) -> Path:
 
     # Day 1: 2026-05-12
     commit("journal/checkins/2026-05-12.md", "# check-in\n", "2026-05-12T10:00:00")
+    commit("notes/a.md", "# note a\n", "2026-05-12T11:00:00")
     # Day 2: 2026-05-13
     commit("journal/checkins/2026-05-13.md", "# check-in\n", "2026-05-13T10:00:00")
     commit("projects/foo/bar.md", "# foo bar\n", "2026-05-13T11:00:00")
-    # Day 3: 2026-05-14 — includes a denylisted path
+    # Day 3: 2026-05-14 — includes denylisted paths
     commit("journal/checkins/2026-05-14.md", "# check-in\n", "2026-05-14T10:00:00")
+    commit("notes/b.md", "# note b\n", "2026-05-14T11:00:00")
     (repo / ".obsidian").mkdir(exist_ok=True)
     (repo / ".obsidian" / "workspace").write_text("{}", encoding="utf-8")
     _git(repo, "add", ".obsidian/workspace")
@@ -78,7 +81,6 @@ class TestCollectEvents:
         end = dt.datetime(2026, 5, 13, 23, 59, 59)
         events = collect_events(vault_repo, start, end)
         paths = [p2 or p1 for _, p1, p2 in events]
-        assert "journal/checkins/2026-05-13.md" in paths
         assert "projects/foo/bar.md" in paths
 
     def test_excludes_denylisted_paths(self, vault_repo):
@@ -87,6 +89,15 @@ class TestCollectEvents:
         events = collect_events(vault_repo, start, end)
         paths = [p2 or p1 for _, p1, p2 in events]
         assert not any(".obsidian" in p for p in paths)
+
+    def test_excludes_checkins_and_weekly(self, vault_repo):
+        # Recap must not loop back over the sibling tools' own outputs.
+        start = dt.datetime(2026, 5, 12, 0, 0, 0)
+        end = dt.datetime(2026, 5, 14, 23, 59, 59)
+        events = collect_events(vault_repo, start, end)
+        paths = [p2 or p1 for _, p1, p2 in events]
+        assert not any(p.startswith("journal/checkins/") for p in paths)
+        assert not any(p.startswith("journal/weekly/") for p in paths)
 
     def test_only_md_files_included(self, vault_repo):
         start = dt.datetime(2026, 5, 13, 0, 0, 0)
@@ -108,9 +119,9 @@ class TestCollectEvents:
         end = dt.datetime(2026, 5, 14, 23, 59, 59)
         events = collect_events(vault_repo, start, end)
         paths = {p2 or p1 for _, p1, p2 in events}
-        assert "journal/checkins/2026-05-12.md" in paths
-        assert "journal/checkins/2026-05-13.md" in paths
-        assert "journal/checkins/2026-05-14.md" in paths
+        assert "notes/a.md" in paths
+        assert "projects/foo/bar.md" in paths
+        assert "notes/b.md" in paths
 
     def test_deduplication(self, vault_repo):
         """Same (status, path1, path2) tuple should appear only once."""

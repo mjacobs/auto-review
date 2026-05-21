@@ -13,8 +13,13 @@ import subprocess
 from pathlib import Path
 
 # Paths that are structural / machine-generated and are not authoring signal.
+# journal/checkins and journal/weekly are excluded because the auto-review
+# siblings (vault-review/memex-review/agent-review/doctor) write back into
+# them — including them recursively reports the siblings' own outputs as
+# vault activity.
 _DENYLIST_RE = re.compile(
     r"^(\.obsidian|\.git|archive|templates|x-attach|"
+    r"journal/checkins|journal/weekly|"
     r"gemini-scribe/Agent-Sessions|gemini-scribe/Scheduled-Tasks)/"
 )
 
