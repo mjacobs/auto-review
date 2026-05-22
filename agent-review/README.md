@@ -90,7 +90,7 @@ All via environment or `.env`:
 | --------------------- | ------------------------------------ | -------------------------------------------------------------------- |
 | `PG_DSN`              | _(required)_                         | Postgres DSN for `agentsview`; omit password to use `PGPASSFILE` / `~/.pgpass` |
 | `ANTHROPIC_API_KEY`   | _(required)_                         | API key sent as `x-api-key`. When `ANTHROPIC_BASE_URL` is set this is a LiteLLM virtual key; otherwise a real Anthropic key |
-| `ANTHROPIC_BASE_URL`  | _(unset → api.anthropic.com)_        | Override Anthropic SDK base URL. Set to a LiteLLM gateway (e.g. `http://PORTAINER_HOST:4000`) to route through the homelab gateway with a per-client virtual key |
+| `ANTHROPIC_BASE_URL`  | _(unset → api.anthropic.com)_        | Override Anthropic SDK base URL. Set to a LiteLLM gateway (e.g. `http://<litellm-host>:4000`) to route through a per-client virtual key |
 | `VAULT_PATH`          | `~/vault`                            | Obsidian vault root                                                  |
 | `TZ`                  | `America/Los_Angeles`                | Timezone for day boundaries                                          |
 | `MODEL_DIGEST`        | `claude-haiku-4-5-20251001`          | Model for per-session digests. Must match a model registered on the gateway when `ANTHROPIC_BASE_URL` is set |
@@ -112,7 +112,7 @@ to (Anthropic, OpenAI, Gemini, or a local llama.cpp/vLLM host). Benefits:
 Example cron-host `.env` fragment:
 
 ```env
-ANTHROPIC_BASE_URL=http://PORTAINER_HOST:4000
+ANTHROPIC_BASE_URL=http://<litellm-host>:4000
 ANTHROPIC_API_KEY=sk-<litellm-virtual-key-for-agent-review>
 MODEL_DIGEST=claude-haiku-4-5-20251001    # or e.g. local-fast
 MODEL_SYNTH=claude-sonnet-4-6             # or e.g. local-long

@@ -15,10 +15,11 @@
 #   ANTHROPIC_API_KEY      — when ANTHROPIC_BASE_URL is set, this is a LiteLLM
 #                            virtual key; otherwise a real Anthropic key.
 # Optional env:
-#   ANTHROPIC_BASE_URL     — e.g. http://PORTAINER_HOST:4000 to route through
-#                            the homelab LiteLLM gateway. Recommended for
-#                            unattended cron: keeps the shared Anthropic key
-#                            off the cron host.
+#   ANTHROPIC_BASE_URL     — override the Anthropic SDK base URL. Point at
+#                            an internal LiteLLM gateway (e.g.
+#                            http://<litellm-host>:4000) to keep the shared
+#                            Anthropic key off the cron host; this cron host
+#                            then only needs a scoped gateway virtual key.
 #   VAULT_PATH
 #   TZ
 #   MODEL_DIGEST           — must be registered on the gateway when ANTHROPIC_BASE_URL is set
