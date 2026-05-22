@@ -7,13 +7,20 @@
 #
 # Installed at ~/.local/bin/run-health-watch-daily on the cron host.
 # Companion files:
-#   ~/.local/bin/health-watch                  (the python script)
-#   ~/.local/share/auto-review/HEALTH-WATCH-CONTEXT.md  (bundled playbook)
+#   ~/.local/bin/health-watch                          (the python script)
+#   ~/.config/auto-review/HEALTH-WATCH-CONTEXT.md      (operator playbook,
+#                                                       not committed —
+#                                                       see HEALTH-WATCH-CONTEXT.example.md)
 #
 # Required env (sourced from ~/.secrets):
-#   ANTHROPIC_API_KEY      — LiteLLM virtual key (see ANTHROPIC_BASE_URL)
-#   ANTHROPIC_BASE_URL     — homelab gateway, e.g. http://PORTAINER_HOST:4000
+#   ANTHROPIC_API_KEY      — API key sent as x-api-key. When ANTHROPIC_BASE_URL
+#                            is set this is a gateway virtual key; otherwise a
+#                            real Anthropic key.
 # Optional env:
+#   ANTHROPIC_BASE_URL     — override the SDK base URL, e.g. an internal
+#                            LiteLLM gateway. Recommended for unattended cron
+#                            so the cron host carries a scoped virtual key
+#                            instead of the shared Anthropic key.
 #   VAULT_PATH             — defaults to ~/vault
 #   HEALTH_WATCH_MODEL     — defaults to claude-sonnet-4-6
 #   HEALTH_WATCH_CONTEXT   — override the playbook path

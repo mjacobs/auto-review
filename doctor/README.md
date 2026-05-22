@@ -17,18 +17,34 @@ this directory:
 
 A second daily check that complements the deterministic doctor. Where
 the doctor counts "did each job fire and write a section?", the
-health-watch asks Claude (via the homelab LiteLLM gateway) to verify
-against a bundled known-landmines playbook
-([`HEALTH-WATCH-CONTEXT.md`](./HEALTH-WATCH-CONTEXT.md)) and produce
-an evidence-backed GREEN/NON-GREEN verdict.
+health-watch asks Claude (optionally via an internal LiteLLM gateway)
+to verify against an operator-authored known-landmines playbook and
+produce an evidence-backed GREEN/NON-GREEN verdict.
 
 Files:
 
 | file | role |
 |---|---|
 | `health-watch` | executable Python (stdlib + urllib for the API call); reads context + check-ins + cron.log, calls `/v1/messages`, writes a marker-bracketed `## health-watch — YYYY-MM-DD` section into today's check-in |
-| `HEALTH-WATCH-CONTEXT.md` | bundled playbook of known landmines; extend this file as new failure modes appear |
+| [`HEALTH-WATCH-CONTEXT.example.md`](./HEALTH-WATCH-CONTEXT.example.md) | generic playbook skeleton. Copy to `~/.config/auto-review/HEALTH-WATCH-CONTEXT.md` and edit with your real landmines. Operator-specific playbooks should not be committed to this repo. |
 | `run-health-watch-daily.sh` | bash cron wrapper; sources `~/.secrets`, runs the script, commits + pushes the vault, propagates the GREEN/NON-GREEN exit code |
+
+### Playbook location
+
+The script resolves the playbook in this order:
+
+1. `--context PATH` flag.
+2. `HEALTH_WATCH_CONTEXT` env var.
+3. `~/.config/auto-review/HEALTH-WATCH-CONTEXT.md` (recommended).
+4. `~/.local/share/auto-review/HEALTH-WATCH-CONTEXT.md` (legacy).
+5. The example skeleton in this directory (with a stderr warning).
+
+The playbook is read verbatim into every LLM call, so a deployment-
+specific playbook is what makes the watch useful — the more concretely
+it names symptoms, log strings, and prior incidents, the more the LLM
+can verify against it instead of hallucinating "looks fine."
+
+### Cron
 
 Cron line (08:00 PT — after the 22:01 PT doctor has settled overnight):
 
@@ -38,12 +54,18 @@ Cron line (08:00 PT — after the 22:01 PT doctor has settled overnight):
 
 Required env (on the cron host, in `~/.secrets`):
 
-- `ANTHROPIC_API_KEY` — a LiteLLM virtual key
-- `ANTHROPIC_BASE_URL` — e.g. `http://PORTAINER_HOST:4000`
+- `ANTHROPIC_API_KEY` — API key sent as `x-api-key`. When
+  `ANTHROPIC_BASE_URL` is set this is a gateway virtual key; otherwise
+  a real Anthropic key.
 
-Optional: `HEALTH_WATCH_MODEL` (default `claude-sonnet-4-6`),
-`HEALTH_WATCH_CONTEXT` (override the playbook path),
-`VAULT_PATH` (default `~/vault`).
+Optional env:
+
+- `ANTHROPIC_BASE_URL` — override the Anthropic SDK base URL. Point at
+  an internal LiteLLM gateway to keep the shared Anthropic key off the
+  cron host.
+- `HEALTH_WATCH_MODEL` — default `claude-sonnet-4-6`.
+- `HEALTH_WATCH_CONTEXT` — override the playbook path.
+- `VAULT_PATH` — default `~/vault`.
 
 Exit codes: 0 GREEN, 2 NON-GREEN (still wrote + pushed the section),
 other = hard failure.
@@ -51,8 +73,8 @@ other = hard failure.
 Local development:
 
 ```bash
-ANTHROPIC_API_KEY=<litellm-virtual-key> \
-ANTHROPIC_BASE_URL=http://PORTAINER_HOST:4000 \
+ANTHROPIC_API_KEY=<key> \
+ANTHROPIC_BASE_URL=<optional-gateway-url> \
 ./health-watch --log ~/path/to/cron.log --vault ~/vault --dry-run
 ```
 

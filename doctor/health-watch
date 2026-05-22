@@ -44,16 +44,32 @@ CLOSE_MARKER = re.compile(
 def find_context_path() -> Path:
     """Resolve the HEALTH-WATCH-CONTEXT.md playbook.
 
-    Order of preference: env override → deployed share dir → sibling of
-    this script (development mode running from the repo).
+    Order of preference:
+      1. HEALTH_WATCH_CONTEXT env var.
+      2. ~/.config/auto-review/HEALTH-WATCH-CONTEXT.md (recommended).
+      3. ~/.local/share/auto-review/HEALTH-WATCH-CONTEXT.md (legacy
+         deployed path; kept for backwards compatibility).
+      4. The example skeleton shipped alongside this script — usable
+         for a dry-run but emits a stderr warning since it contains no
+         real landmines.
     """
     env = os.environ.get("HEALTH_WATCH_CONTEXT")
     if env:
         return Path(env)
-    deployed = Path.home() / ".local/share/auto-review/HEALTH-WATCH-CONTEXT.md"
-    if deployed.exists():
-        return deployed
-    return Path(__file__).resolve().parent / "HEALTH-WATCH-CONTEXT.md"
+    user_config = Path.home() / ".config/auto-review/HEALTH-WATCH-CONTEXT.md"
+    if user_config.exists():
+        return user_config
+    legacy_share = Path.home() / ".local/share/auto-review/HEALTH-WATCH-CONTEXT.md"
+    if legacy_share.exists():
+        return legacy_share
+    example = Path(__file__).resolve().parent / "HEALTH-WATCH-CONTEXT.example.md"
+    sys.stderr.write(
+        f"health-watch: no playbook found at $HEALTH_WATCH_CONTEXT, "
+        f"{user_config}, or {legacy_share}; "
+        f"falling back to example skeleton at {example}. "
+        f"Copy the example to {user_config} and customize it for real use.\n"
+    )
+    return example
 
 
 def tail_lines(path: Path, n: int) -> list[str]:
