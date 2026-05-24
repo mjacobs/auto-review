@@ -212,8 +212,8 @@ def _upsert(bundle: SessionBundle, digest: Digest, usage: dict[str, int]) -> Non
 def _call_llm(bundle: SessionBundle) -> tuple[Digest, dict[str, int]]:
     s = get_settings()
     client = Anthropic(
-        api_key=s.anthropic_api_key.get_secret_value(),
-        base_url=s.anthropic_base_url,
+        api_key=s.llm_api_key.get_secret_value(),
+        base_url=s.llm_base_url,
     )
     user_payload = _render_user_payload(bundle)
 

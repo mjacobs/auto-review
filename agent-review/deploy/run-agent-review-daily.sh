@@ -12,17 +12,17 @@
 #
 # Required env (sourced from ~/.secrets if present):
 #   PG_DSN                 — recommend dedicated `agent_review` PG user, not admin
-#   ANTHROPIC_API_KEY      — when ANTHROPIC_BASE_URL is set, this is a LiteLLM
-#                            virtual key; otherwise a real Anthropic key.
+#   LLM_API_KEY            — key for the LLM endpoint. When LLM_BASE_URL points
+#                            at a LiteLLM gateway, this is a gateway virtual
+#                            key; otherwise a direct provider key.
 # Optional env:
-#   ANTHROPIC_BASE_URL     — override the Anthropic SDK base URL. Point at
-#                            an internal LiteLLM gateway (e.g.
-#                            http://<litellm-host>:4000) to keep the shared
-#                            Anthropic key off the cron host; this cron host
-#                            then only needs a scoped gateway virtual key.
+#   LLM_BASE_URL           — override the LLM SDK base URL. Point at an
+#                            internal LiteLLM gateway (e.g.
+#                            https://llm.example.internal) so this host only
+#                            needs a scoped gateway virtual key.
 #   VAULT_PATH
 #   TZ
-#   MODEL_DIGEST           — must be registered on the gateway when ANTHROPIC_BASE_URL is set
+#   MODEL_DIGEST           — must be registered on the gateway when LLM_BASE_URL is set
 #   MODEL_SYNTH            — same as MODEL_DIGEST
 #   PGPASSFILE
 
@@ -31,7 +31,7 @@ set -euo pipefail
 [[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
 
 : "${PG_DSN:?PG_DSN must be set (provision ~/.secrets on this host)}"
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set}"
+: "${LLM_API_KEY:?LLM_API_KEY must be set}"
 
 VAULT="${VAULT_PATH:-$HOME/vault}"
 

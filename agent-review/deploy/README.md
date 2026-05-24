@@ -32,7 +32,7 @@ The wrapper sources `~/.secrets` and requires:
 
 ```bash
 export PG_DSN='...'
-export ANTHROPIC_API_KEY='...'
+export LLM_API_KEY='...'
 ```
 
 Optional exports:
@@ -53,7 +53,7 @@ host's `~/.secrets`.
 Verify presence by count only:
 
 ```bash
-ssh -o BatchMode=yes <cron-host> 'grep -c "^export PG_DSN=" ~/.secrets; grep -c "^export ANTHROPIC_API_KEY=" ~/.secrets'
+ssh -o BatchMode=yes <cron-host> 'grep -c "^export PG_DSN=" ~/.secrets; grep -c "^export LLM_API_KEY=" ~/.secrets'
 ```
 
 ## smoke tests

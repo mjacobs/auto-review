@@ -285,7 +285,7 @@ agent-review/
 ├── pyproject.toml
 ├── DESIGN.md
 ├── README.md
-├── .env.example                  # PG_DSN, ANTHROPIC_API_KEY, VAULT_PATH, TZ
+├── .env.example                  # PG_DSN, LLM_API_KEY, VAULT_PATH, TZ
 ├── migrations/
 │   └── 001_init.sql              # creates agent_review.* tables
 ├── src/agent_review/

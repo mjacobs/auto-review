@@ -206,8 +206,8 @@ def _call_llm(
 ) -> tuple[str, dict[str, int]]:
     s = get_settings()
     client = Anthropic(
-        api_key=s.anthropic_api_key.get_secret_value(),
-        base_url=s.anthropic_base_url,
+        api_key=s.llm_api_key.get_secret_value(),
+        base_url=s.llm_base_url,
     )
 
     user_payload = _render_synth_payload(date, pairs, stats)
