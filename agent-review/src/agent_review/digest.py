@@ -219,7 +219,7 @@ def _call_llm(bundle: SessionBundle) -> tuple[Digest, dict[str, int]]:
 
     response = client.messages.create(
         model=s.model_digest,
-        max_tokens=2048,
+        max_tokens=4096,
         system=[
             {
                 "type": "text",
@@ -237,7 +237,11 @@ def _call_llm(bundle: SessionBundle) -> tuple[Digest, dict[str, int]]:
         None,
     )
     if tool_block is None:
-        raise RuntimeError(f"No tool_use block in response for session {bundle.session_id}")
+        stop_reason = getattr(response, "stop_reason", "unknown")
+        raise RuntimeError(
+            f"No tool_use block in response for session {bundle.session_id} "
+            f"(stop_reason={stop_reason}, model={s.model_digest})"
+        )
 
     digest = Digest.model_validate(tool_block.input)
     usage = {

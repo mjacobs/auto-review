@@ -164,12 +164,21 @@ def _run_one(
 
     pairs: list[tuple] = []
     digest_usages: list[dict[str, int]] = []
+    failures: list[tuple[str, str]] = []
     for b in bundles:
-        d, usage, fresh = get_or_create_digest_result(
-            b,
-            force=force,
-            persist=not dry_run,
-        )
+        try:
+            d, usage, fresh = get_or_create_digest_result(
+                b,
+                force=force,
+                persist=not dry_run,
+            )
+        except Exception as exc:
+            failures.append((b.session_id, f"{type(exc).__name__}: {exc}"))
+            click.echo(
+                f"    SKIPPED {b.session_id[:24]}…  {type(exc).__name__}: {exc}",
+                err=True,
+            )
+            continue
         if dry_run or fresh:
             digest_usages.append(usage)
         pairs.append((b, d))
@@ -177,6 +186,15 @@ def _run_one(
             f"    digested {b.session_id[:24]}…  outcome={d.outcome}",
             err=True,
         )
+
+    if failures:
+        click.echo(
+            f"  {len(failures)} session(s) failed to digest; continuing without them.",
+            err=True,
+        )
+    if not pairs:
+        click.echo("  no successful digests; aborting day.", err=True)
+        return
 
     click.echo("  synthesizing daily narrative…", err=True)
     report = synthesize_day(
