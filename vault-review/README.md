@@ -9,8 +9,7 @@ own check-in note.
 No LLM, no external service — just `git log` → markdown → idempotent
 file write. Sibling of [`agent-review`](../agent-review/) and
 [`memex-review`](../memex-review/). See [`DESIGN.md`](./DESIGN.md) for
-the full design and [`docs/history/PLAN.md`](./docs/history/PLAN.md) for
-the original implementation log.
+the full design.
 
 ## What you get
 
@@ -114,5 +113,4 @@ uv run vault-review --help
 ## See also
 
 - [`DESIGN.md`](./DESIGN.md) — design rationale, idempotency story, denylist.
-- [`docs/history/PLAN.md`](./docs/history/PLAN.md) — original implementation log.
 - [`deploy/`](./deploy/) — cron wrapper for unattended daily runs.

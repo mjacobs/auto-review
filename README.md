@@ -71,9 +71,9 @@ full history.
 
 **Hosting is decoupled from the workloads.** Deterministic periodic
 jobs (these three tools) have a different security/scrutiny profile
-from agent runtimes, even when they share a box. See
-[`decisions/001-periodic-jobs-vs-agent-runtime.md`](./decisions/001-periodic-jobs-vs-agent-runtime.md)
-for the ADR.
+from agent runtimes, even when they share a box. The tools assume
+nothing about their host beyond "Linux with cron, the credentials
+they need, and (where applicable) a vault checkout."
 
 ## Quickstart
 

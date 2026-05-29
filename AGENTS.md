@@ -143,6 +143,14 @@ state is maintained per machine. The workflow is a personal/AI
 coordination aid; outside contributors don't need `bd` to read or
 contribute to the repo.
 
+The beads workspace here is **private-by-convention**: issues may
+reference internal infrastructure (host names, IP addresses, internal
+service names) that this public repo otherwise scrubs. Do **not** set
+up `bd dolt push` to a public remote without first scrubbing those
+issues. If a shared task store ever becomes useful, host it somewhere
+that matches the trust level of its contents (e.g., on the LAN, not
+on a public Dolt remote).
+
 If you're working in this repo with `bd` installed:
 
 ```bash
