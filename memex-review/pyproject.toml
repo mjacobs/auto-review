@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Daily narrative recaps of cf-memex captures, written into the Obsidian vault."
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "mj", email = "m@m4tt.xyz" }]
+authors = [{ name = "mj" }]
 dependencies = [
   "click>=8.1",
   "httpx>=0.27",

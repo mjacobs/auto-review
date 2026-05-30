@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Daily narrative reports of agent (Claude/Codex/Gemini/...) activity, written into the Obsidian vault."
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "mj", email = "m@m4tt.xyz" }]
+authors = [{ name = "mj" }]
 dependencies = [
   "anthropic>=0.40.0",
   "psycopg[binary]>=3.2",

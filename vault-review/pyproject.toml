@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Daily and weekly narrative recaps of vault activity, derived from git diff."
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "mj", email = "m@m4tt.xyz" }]
+authors = [{ name = "mj" }]
 dependencies = [
   "click>=8.1",
   "python-frontmatter>=1.1",

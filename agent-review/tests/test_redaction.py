@@ -148,7 +148,7 @@ class TestGithubTokens:
         assert "a3f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0" in result
 
     def test_git_sha_unchanged(self):
-        text = "Author: mj <m@m4tt.xyz>\ncommit deadbeefcafebabe0123456789abcdef01234567"
+        text = "Author: mj <test@example.com>\ncommit deadbeefcafebabe0123456789abcdef01234567"
         result = redact(text)
         assert "deadbeefcafebabe0123456789abcdef01234567" in result
 

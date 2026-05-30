@@ -32,9 +32,8 @@ _window: 2026-05-14 · 6 sessions across 3 agents · ~2.4h interactive time_
 the `vault-review` deploy story. Morning: extracted `PLAN.md` to
 `docs/history/` and added a context preamble so the original
 implementation log is obviously historical, not current. Afternoon:
-generalized openclaw references throughout deploy scripts to make the
-repo readable as a recipe rather than a mirror of one home lab. 52 tests
-still passing.
+generalized deploy scripts to make the repo readable as a recipe rather
+than a mirror of one home lab. 52 tests still passing.
 
 **serverless-memex** — One short Codex session adding the `before=`
 cursor to `/thoughts`, with a follow-up Gemini session to verify the
@@ -86,15 +85,17 @@ cache is what makes mid-day re-runs cheap.
 
 All via environment or `.env`:
 
-| Variable              | Default                              | Description                                                          |
-| --------------------- | ------------------------------------ | -------------------------------------------------------------------- |
-| `PG_DSN`              | _(required)_                         | Postgres DSN for `agentsview`; omit password to use `PGPASSFILE` / `~/.pgpass` |
-| `LLM_API_KEY`         | _(required)_                         | API key sent to the LLM endpoint. When `LLM_BASE_URL` is set this is typically a LiteLLM virtual key; otherwise a direct provider key |
-| `LLM_BASE_URL`        | _(unset → api.anthropic.com)_        | Override the LLM SDK base URL. Set to a LiteLLM gateway (e.g. `https://llm.example.internal`) to route through a per-client virtual key |
-| `VAULT_PATH`          | `~/vault`                            | Obsidian vault root                                                  |
-| `TZ`                  | `America/Los_Angeles`                | Timezone for day boundaries                                          |
-| `MODEL_DIGEST`        | `claude-haiku-4-5-20251001`          | Model for per-session digests. Must match a model registered on the gateway when `LLM_BASE_URL` is set |
-| `MODEL_SYNTH`         | `claude-sonnet-4-6`                  | Model for daily narrative synthesis. Same gateway-registration caveat as `MODEL_DIGEST` |
+| Variable                              | Default                              | Description                                                          |
+| ------------------------------------- | ------------------------------------ | -------------------------------------------------------------------- |
+| `PG_DSN`                              | _(required)_                         | Postgres DSN; omit password to use `PGPASSFILE` / `~/.pgpass`       |
+| `LLM_API_KEY`                         | _(required)_                         | API key sent to the LLM endpoint. When `LLM_BASE_URL` is set this is typically a LiteLLM virtual key; otherwise a direct provider key |
+| `LLM_BASE_URL`                        | _(unset → api.anthropic.com)_        | Override the LLM SDK base URL. Set to a LiteLLM gateway (e.g. `https://llm.example.internal`) to route through a per-client virtual key |
+| `VAULT_PATH`                          | `~/vault`                            | Obsidian vault root                                                  |
+| `TZ`                                  | `America/Los_Angeles`                | Timezone for day boundaries                                          |
+| `MODEL_DIGEST`                        | `claude-haiku-4-5-20251001`          | Model for per-session digests. Must match a model registered on the gateway when `LLM_BASE_URL` is set |
+| `MODEL_SYNTH`                         | `claude-sonnet-4-6`                  | Model for daily narrative synthesis. Same gateway-registration caveat as `MODEL_DIGEST` |
+| `AGENT_REVIEW_PG_SCHEMA`              | `agentsview`                         | Schema name for the upstream read-only database                      |
+| `AGENT_REVIEW_AUTOMATED_ID_PREFIXES`  | `hermes:cron_`                       | Comma-separated session-id prefixes treated as automated (non-human) when the upstream `is_automated` flag is unreliable |
 
 ### Routing via LiteLLM (recommended for unattended cron)
 

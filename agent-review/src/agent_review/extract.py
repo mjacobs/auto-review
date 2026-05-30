@@ -35,7 +35,14 @@ TRIVIAL_SLASH_COMMANDS = re.compile(
 )
 # Heuristic: upstream is_automated flag is unreliable (false everywhere as of
 # 2026-05). Treat sessions whose id begins with these prefixes as automated.
-AUTOMATED_ID_PREFIXES = ("hermes:cron_",)
+# Configurable via AGENT_REVIEW_AUTOMATED_ID_PREFIXES env var (comma-separated).
+_AUTOMATED_ID_PREFIXES_DEFAULT = "hermes:cron_"
+
+
+def _get_automated_id_prefixes() -> tuple[str, ...]:
+    import os
+    raw = os.environ.get("AGENT_REVIEW_AUTOMATED_ID_PREFIXES", _AUTOMATED_ID_PREFIXES_DEFAULT)
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 # ─── data shapes ───────────────────────────────────────────────────────────────
 
@@ -130,9 +137,10 @@ def extract_day(date: dt.date) -> list[SessionBundle]:
 
 def extract_session(session_id: str) -> SessionBundle | None:
     """Pull a single session by id (no scope filter, no subagent folding)."""
+    schema = get_settings().pg_schema
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM agentsview.sessions WHERE id = %s",
+            f"SELECT * FROM {schema}.sessions WHERE id = %s",
             (session_id,),
         )
         row = cur.fetchone()
@@ -147,11 +155,12 @@ def extract_session(session_id: str) -> SessionBundle | None:
 
 
 def _fetch_session_rows(conn, start: dt.datetime, end: dt.datetime) -> list[dict]:
+    schema = get_settings().pg_schema
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT *
-              FROM agentsview.sessions
+              FROM {schema}.sessions
              WHERE started_at >= %s AND started_at < %s
                AND is_automated = false
                AND deleted_at IS NULL
@@ -167,9 +176,10 @@ def _parent_in_set(parent_id: str, rows: list[dict]) -> bool:
 
 
 def _collect_subagents(conn, parent_id: str) -> list[SessionBundle]:
+    schema = get_settings().pg_schema
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM agentsview.sessions WHERE parent_session_id = %s ORDER BY started_at",
+            f"SELECT * FROM {schema}.sessions WHERE parent_session_id = %s ORDER BY started_at",
             (parent_id,),
         )
         children = list(cur.fetchall())
@@ -182,12 +192,13 @@ def _collect_subagents(conn, parent_id: str) -> list[SessionBundle]:
 
 
 def _fetch_messages(conn, session_id: str) -> list[dict]:
+    schema = get_settings().pg_schema
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT ordinal, role, content, content_length, "timestamp",
                    is_sidechain, is_compact_boundary, has_tool_use
-              FROM agentsview.messages
+              FROM {schema}.messages
              WHERE session_id = %s
              ORDER BY ordinal
             """,
@@ -197,12 +208,13 @@ def _fetch_messages(conn, session_id: str) -> list[dict]:
 
 
 def _fetch_tool_calls(conn, session_id: str) -> list[dict]:
+    schema = get_settings().pg_schema
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT id, session_id, tool_name, category, call_index, tool_use_id,
                    input_json, result_content, subagent_session_id, message_ordinal
-              FROM agentsview.tool_calls
+              FROM {schema}.tool_calls
              WHERE session_id = %s
              ORDER BY message_ordinal, call_index
             """,
@@ -373,7 +385,7 @@ def _summarize_tools(tool_calls: list[dict]) -> ToolSummary:
 def _is_in_scope(b: SessionBundle) -> bool:
     """Apply post-query scope filters."""
     # 0. Heuristic automation prefixes (upstream is_automated is unreliable)
-    if any(b.session_id.startswith(p) for p in AUTOMATED_ID_PREFIXES):
+    if any(b.session_id.startswith(p) for p in _get_automated_id_prefixes()):
         return False
     # 1. Trivial slash-command-only sessions
     if b.message_count <= 1 and TRIVIAL_SLASH_COMMANDS.match(b.first_message.strip()):

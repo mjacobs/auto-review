@@ -333,12 +333,13 @@ def _render_tool_summary(s: ToolSummary) -> str:
 
 
 def fetch_pricing() -> dict[str, dict[str, float]]:
-    """Read agentsview.model_pricing into {pattern: {input, output, cache_read,
+    """Read {pg_schema}.model_pricing into {pattern: {input, output, cache_read,
     cache_creation}}."""
+    schema = get_settings().pg_schema
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT model_pattern, input_per_mtok, output_per_mtok, "
-            "cache_creation_per_mtok, cache_read_per_mtok FROM agentsview.model_pricing"
+            f"cache_creation_per_mtok, cache_read_per_mtok FROM {schema}.model_pricing"
         )
         rows = cur.fetchall()
     return {

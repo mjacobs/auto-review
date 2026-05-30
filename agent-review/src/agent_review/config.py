@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     tz_name: str = Field("America/Los_Angeles", alias="TZ")
     model_digest: str = Field("claude-haiku-4-5-20251001", alias="MODEL_DIGEST")
     model_synth: str = Field("claude-sonnet-4-6", alias="MODEL_SYNTH")
+    # Schema name for the upstream read-only database (default: agentsview).
+    pg_schema: str = Field("agentsview", alias="AGENT_REVIEW_PG_SCHEMA")
 
     @property
     def tz(self) -> ZoneInfo:

@@ -18,7 +18,7 @@ check-in note.
 ## Non-goals (v1)
 
 - No web UI — design leaves room for one (digests live in the DB) but ships CLI-only.
-- No automatic scheduling / no hermes-cron registration.
+- No automatic scheduling / no upstream cron registration.
 - No cross-day synthesis (weekly/monthly roll-ups are a phase 2 lever).
 - No dashboard for the data already in `agentsview` — that exists separately.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """auto-review doctor v0 — health check for the auto-review sibling crons.
 
-Reads the openclaw cron.log tail and yesterday's check-in note, renders a
+Reads the deploy host's cron.log tail and yesterday's check-in note, renders a
 marker-bracketed health section, strip-and-replaces it into today's check-in.
 
 v0 scope per beads `auto-review-fs7`: single-file script, no package, no
