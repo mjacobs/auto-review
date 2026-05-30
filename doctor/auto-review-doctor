@@ -30,9 +30,11 @@ TAIL_LINES = 1000
 
 # (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?)
 JOBS = [
-    ("vault-review daily",  "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),  "vault-review",  False),
-    ("memex-review daily",  "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),  "memex-review",  False),
-    ("vault-review weekly", "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"), "vault-review",  True),
+    ("vault-review daily",       "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),    "vault-review",        False),
+    ("memex-review daily",       "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),    "memex-review",        False),
+    ("agent-review daily",       "21:01", re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),   "agent-review",        False),
+    ("auto-review-doctor daily", "22:01", re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"), "auto-review-doctor", False),
+    ("vault-review weekly",      "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),   "vault-review",        True),
 ]
 
 DOCTOR_MARKER_OPEN  = re.compile(r"^## auto-review doctor — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
@@ -126,6 +128,16 @@ def assess_jobs(
                 skipped_reason="weekly — Sundays only",
             ))
             continue
+        if sibling_tool == "auto-review-doctor":
+            # Self-row. We can't see our own commit yet (it happens after this
+            # script exits, in the cron wrapper), and our own section is the
+            # one being rendered right now. Hardcode both cells to reflect that.
+            reports.append(JobReport(
+                name=name, expected_hhmm=hhmm, fired=True, fired_at_pt="now",
+                section_present=True, section_lines=None, section_note="self — see this section",
+                skipped_reason=None,
+            ))
+            continue
         match = latest_match(log_lines, regex)
         if match is None:
             reports.append(JobReport(
@@ -171,12 +183,16 @@ def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count:
             continue
         if not r.fired:
             fire_cell = f"❌ never" if r.fired_at_pt is None else f"❌ last: {r.fired_at_pt}"
+        elif r.fired_at_pt == "now":
+            fire_cell = "✓ now (this run)"
         else:
             fire_cell = f"✓ {r.fired_at_pt} PT"
         if r.section_present is None:
             section_cell = "—"
         elif not r.section_present:
             section_cell = "❌ missing"
+        elif r.section_lines is None:
+            section_cell = f"_{r.section_note}_"
         else:
             note = f" ({r.section_note})" if r.section_note else ""
             section_cell = f"✓ {r.section_lines} lines{note}"
