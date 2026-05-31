@@ -56,7 +56,12 @@ cd "$VAULT"
 if [[ -n "$(git status --porcelain)" ]]; then
     git add -A
     git commit -m "auto-review health-watch: daily $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    git push
+    # Rebase on any concurrent remote commit (e.g. another host's vault
+    # auto-sync) before pushing, then retry once if we still race. Without
+    # this, a non-fast-forward rejection leaves the vault diverged and every
+    # subsequent cron push fails silently (auto-review-qgo).
+    git pull --rebase --quiet
+    git push || { git pull --rebase --quiet && git push; }
 fi
 
 exit "$rc"
