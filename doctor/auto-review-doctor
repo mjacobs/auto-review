@@ -29,10 +29,9 @@ DEFAULT_VAULT = Path.home() / "vault"
 TAIL_LINES = 1000
 
 # (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?)
-# memex-review still runs on openclaw (not yet migrated — auto-review-pmy), so
-# doctor on AUTO_REVIEW_RUNNER can't see it; re-add its row here when pmy lands.
 JOBS = [
     ("vault-review daily",       "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),    "vault-review",        False),
+    ("memex-review daily",       "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),    "memex-review",        False),
     ("agent-review daily",       "21:01", re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),   "agent-review",        False),
     ("auto-review-doctor daily", "22:01", re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"), "auto-review-doctor", False),
     ("vault-review weekly",      "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),   "vault-review",        True),
