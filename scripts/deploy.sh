@@ -57,7 +57,7 @@ declare -A TOOL_CRON=(
 
 # Grep patterns to check in ~/.secrets (space-separated list per tool).
 declare -A TOOL_SECRET_PATTERNS=(
-  [agent-review]="^export PG_DSN= ^export ANTHROPIC_API_KEY="
+  [agent-review]="^export PG_DSN= ^export LLM_API_KEY="
   [vault-review]=""
   [memex-review]="^export MEMEX_URL= ^export MEMEX_CLIENT_ID= ^export MEMEX_CLIENT_SECRET="
 )
@@ -155,7 +155,10 @@ printf '  Proceed? [y/N] '
 read -r CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || { warn "Aborted by user."; exit 0; }
 
-REMOTE_CMD="uv tool install --reinstall /tmp/${WHEEL_BASENAME}"
+# Non-interactive ssh does not source the remote user's profile, so uv (and
+# the installed tool shims) may not be on PATH. Set it explicitly to match the
+# crontab PATH so install and the eventual cron run resolve the same binaries.
+REMOTE_CMD="export PATH=\"\$HOME/.local/bin:\$PATH\"; uv tool install --reinstall /tmp/${WHEEL_BASENAME}"
 if [[ $HAVE_WRAPPER -eq 1 ]]; then
   REMOTE_CMD+=" && mv -f /tmp/${WRAPPER}.sh \$HOME/.local/bin/${WRAPPER} && chmod +x \$HOME/.local/bin/${WRAPPER}"
 fi
