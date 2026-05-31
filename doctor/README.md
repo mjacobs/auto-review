@@ -85,12 +85,22 @@ clean GREEN verdicts. After that, re-evaluate whether to retire it,
 fold its checks into the doctor, or keep it running as a permanent
 second-line check.
 
+**Status (2026-05-31):** after the ADR-001 migration, the deterministic
+`auto-review-doctor` runs on the new host (AUTO_REVIEW_RUNNER) alongside the
+pipeline and is the primary liveness check. health-watch stays on
+openclaw as a non-critical, experimental second-line check (migration
+off openclaw was decided against — `auto-review-cq0` closed). Two known
+caveats while it lives there: its `cron.log` tail now only sees
+openclaw's own activity (the pipeline jobs log to .223), and its LLM
+call depends on the openclaw LiteLLM gateway being up. Revisit the log
+source and gateway reliability if health-watch gets serious use again.
+
 ---
 
 ## auto-review doctor (v0)
 
 Daily health check for the auto-review sibling crons. Reads
-`~/.local/state/vault-agent/cron.log` + yesterday's check-in note,
+`~/.local/state/auto-review/cron.log` + yesterday's check-in note,
 renders a marker-bracketed health section, strip-and-replaces it into
 today's check-in note.
 
@@ -127,9 +137,9 @@ log lines are scanned (default 1000).
 ## What it surfaces
 
 - **Per-job liveness**: for each expected cron (vault-review daily,
-  memex-review daily, vault-review weekly on Sundays), did its most-recent
-  success-commit line in the log carry a UTC timestamp that maps to today
-  in PT?
+  memex-review daily, agent-review daily, auto-review-doctor daily, and
+  vault-review weekly on Sundays), did its most-recent success-commit
+  line in the log carry a UTC timestamp that maps to today in PT?
 - **Output sanity**: for each expected sibling section in yesterday's
   check-in note, is the marker present + how many non-empty lines does it
   contain? Distinguishes "ran, empty" (e.g. memex-review with 0 captures)
@@ -142,19 +152,21 @@ log lines are scanned (default 1000).
 ## Output shape
 
 ```markdown
-## auto-review doctor — 2026-05-18
+## auto-review doctor — 2026-05-31
 
-_2/2 jobs fired today · 0 tracebacks in log tail_
+_4/4 jobs fired today · 0 tracebacks in log tail_
 
-_reporting on yesterday's check-in: `journal/checkins/2026-05-17.md`_
+_reporting on yesterday's check-in: `journal/checkins/2026-05-30.md`_
 
 | job | fired today | section in yesterday's check-in |
 |---|---|---|
 | vault-review daily | ✓ 20:01 PT | ✓ 40 lines |
 | memex-review daily | ✓ 20:31 PT | ✓ 7 lines (0 captures) |
+| agent-review daily | ✓ 21:01 PT | ✓ 28 lines |
+| auto-review-doctor daily | ✓ 22:01 PT | ✓ 6 lines |
 | vault-review weekly | — | _weekly — Sundays only_ |
 
-<!-- auto-review-doctor:daily=2026-05-18 generated_at=2026-05-18T... -->
+<!-- auto-review-doctor:daily=2026-05-31 generated_at=2026-05-31T... -->
 ```
 
 Strip-and-replace is by regex on the open heading + close marker — sibling
