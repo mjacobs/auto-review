@@ -165,6 +165,9 @@ sections and hand-written content outside the doctor block are preserved.
 
 ## Deploy (cron host, gated on user confirmation)
 
+> [!NOTE]
+> When deploying or running commands on the cron host (e.g. the LXC runner at `AUTO_REVIEW_RUNNER`), connect as the `auto-review` or `root` user. Key-based authentication is configured for these accounts. There is no remote user `mj` on the runner system.
+
 ```bash
 # from this directory:
 scp auto-review-doctor <cron-host>:~/.local/bin/auto-review-doctor

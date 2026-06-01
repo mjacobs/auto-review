@@ -59,6 +59,9 @@ ssh <cron-host> 'uv tool install --reinstall /tmp/<tool>-*.whl && \
 ssh <cron-host> 'crontab -e'   # add the cron line by hand
 ```
 
+> [!NOTE]
+> **SSH User Configuration**: When connecting to the runner hosts (such as the LXC runner at `AUTO_REVIEW_RUNNER` or openclaw at `OPENCLAW_HOST`) via SSH/SCP, connect as the `auto-review` or `root` user. Key-based authentication is pre-configured for these accounts. Note that the local user `mj` does not exist on the runner hosts.
+
 Stagger any new sibling by ≥30 min from the others so they don't race on
 the vault git lock. Wrappers can share a single log file (e.g.
 `~/.local/state/auto-review/cron.log`) or split per-tool — either works.
