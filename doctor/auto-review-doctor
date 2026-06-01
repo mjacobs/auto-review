@@ -112,6 +112,16 @@ def count_tracebacks(lines: list[str]) -> int:
     return sum(1 for line in lines if line.startswith("Traceback (most recent call last):"))
 
 
+# git's per-ref rejection line, e.g. " ! [rejected]  main -> main (non-fast-forward)".
+# One match == one rejected push. Healed automatically by the wrappers' rebase+retry
+# (464110b), so this is a tripwire for the rare double-race, not a hard failure.
+PUSH_REJECT = re.compile(r"!\s+\[rejected\].*\((?:non-fast-forward|fetch first)\)")
+
+
+def count_push_rejections(lines: list[str]) -> int:
+    return sum(1 for line in lines if PUSH_REJECT.search(line))
+
+
 def assess_jobs(
     log_lines: list[str],
     today_pt: dt.date,
@@ -168,12 +178,13 @@ def assess_jobs(
     return reports
 
 
-def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count: int) -> str:
+def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count: int, push_rejections: int) -> str:
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     expected = [r for r in reports if r.skipped_reason is None]
     fired = [r for r in expected if r.fired]
     yesterday = today_pt - dt.timedelta(days=1)
-    summary = f"_{len(fired)}/{len(expected)} jobs fired today · {traceback_count} tracebacks in log tail_"
+    reject_cell = f"{push_rejections} push rejections" if push_rejections == 0 else f"⚠️ {push_rejections} push rejections"
+    summary = f"_{len(fired)}/{len(expected)} jobs fired today · {traceback_count} tracebacks · {reject_cell} in log tail_"
 
     rows = ["| job | fired today | section in yesterday's check-in |",
             "|---|---|---|"]
@@ -283,7 +294,8 @@ def main() -> int:
 
     reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text)
     tracebacks = count_tracebacks(log_lines)
-    section = render_section(today_pt, reports, tracebacks)
+    push_rejections = count_push_rejections(log_lines)
+    section = render_section(today_pt, reports, tracebacks, push_rejections)
 
     if args.dry_run:
         sys.stdout.write(section)
