@@ -17,7 +17,7 @@ import argparse
 import datetime as dt
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -51,6 +51,7 @@ class JobReport:
     section_lines: int | None
     section_note: str             # "0 captures", "" etc.
     skipped_reason: str | None    # e.g. "weekly — Sundays only"
+    tracebacks: list[str] = field(default_factory=list)
 
 
 def tail_lines(path: Path, n: int) -> list[str]:
@@ -114,8 +115,67 @@ def section_info(text: str, tool: str, kind: str, label: str) -> tuple[bool, int
     return (True, line_count, note)
 
 
-def count_tracebacks(lines: list[str]) -> int:
-    return sum(1 for line in lines if line.startswith("Traceback (most recent call last):"))
+def find_tracebacks(lines: list[str]) -> list[dict[str, str]]:
+    tracebacks = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        if lines[i].startswith("Traceback (most recent call last):"):
+            block_lines = [lines[i]]
+            j = i + 1
+            while j < n:
+                if lines[j].startswith(" ") or lines[j].startswith("\t") or not lines[j].strip():
+                    block_lines.append(lines[j])
+                    j += 1
+                else:
+                    block_lines.append(lines[j])
+                    j += 1
+                    break
+            
+            file_path = None
+            line_no = None
+            for tbl in reversed(block_lines):
+                m = re.search(r'File "([^"]+)", line (\d+)', tbl)
+                if m:
+                    file_path = m.group(1)
+                    line_no = m.group(2)
+                    break
+            
+            exc_line = block_lines[-1].strip() if block_lines else "UnknownError"
+            
+            tool = "other"
+            if file_path:
+                fp_lower = file_path.lower()
+                if "vault-review" in fp_lower or "vault_review" in fp_lower:
+                    tool = "vault-review"
+                elif "memex-review" in fp_lower or "memex_review" in fp_lower:
+                    tool = "memex-review"
+                elif "agent-review" in fp_lower or "agent_review" in fp_lower:
+                    tool = "agent-review"
+                elif "doctor" in fp_lower or "auto-review-doctor" in fp_lower:
+                    tool = "auto-review-doctor"
+            
+            exc_match = re.match(r'^([\w\.]+):\s*(.*)$', exc_line)
+            if exc_match:
+                exc_type = exc_match.group(1).split('.')[-1]
+                exc_msg = exc_match.group(2)
+                exc_summary = f"{exc_type}: {exc_msg}"
+            else:
+                exc_summary = exc_line
+            
+            loc = ""
+            if file_path:
+                loc = f" ({Path(file_path).name}:{line_no})"
+            
+            tracebacks.append({
+                "tool": tool,
+                "summary": f"{exc_summary}{loc}",
+                "full_text": "".join(block_lines)
+            })
+            i = j
+        else:
+            i += 1
+    return tracebacks
 
 
 # git's per-ref rejection line, e.g. " ! [rejected]  main -> main (non-fast-forward)".
@@ -133,6 +193,7 @@ def assess_jobs(
     today_pt: dt.date,
     yesterday_checkin_text: str,
     weekly_text: str,
+    tracebacks: list[dict[str, str]],
 ) -> list[JobReport]:
     is_sunday = today_pt.weekday() == 6
     reports: list[JobReport] = []
@@ -142,6 +203,7 @@ def assess_jobs(
                 name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
                 section_present=None, section_lines=None, section_note="",
                 skipped_reason="weekly — Sundays only",
+                tracebacks=[],
             ))
             continue
         if sibling_tool == "auto-review-doctor":
@@ -152,14 +214,20 @@ def assess_jobs(
                 name=name, expected_hhmm=hhmm, fired=True, fired_at_pt="now",
                 section_present=True, section_lines=None, section_note="self — see this section",
                 skipped_reason=None,
+                tracebacks=[],
             ))
             continue
         match = latest_match(log_lines, regex)
+        
+        # Get tracebacks for this tool
+        job_tracebacks = [tb["summary"] for tb in tracebacks if tb["tool"] == sibling_tool]
+        
         if match is None:
             reports.append(JobReport(
                 name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
                 section_present=False, section_lines=0, section_note="",
                 skipped_reason=None,
+                tracebacks=job_tracebacks,
             ))
             continue
         _, ts_utc = match
@@ -182,17 +250,20 @@ def assess_jobs(
             name=name, expected_hhmm=hhmm, fired=fired_today,
             fired_at_pt=fired_at, section_present=present, section_lines=lines,
             section_note=note, skipped_reason=None,
+            tracebacks=job_tracebacks,
         ))
     return reports
 
 
-def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count: int, push_rejections: int) -> str:
+def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int) -> str:
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     expected = [r for r in reports if r.skipped_reason is None]
     fired = [r for r in expected if r.fired]
     yesterday = today_pt - dt.timedelta(days=1)
+    
+    tb_count = len(tracebacks)
     reject_cell = f"{push_rejections} push rejections" if push_rejections == 0 else f"⚠️ {push_rejections} push rejections"
-    summary = f"_{len(fired)}/{len(expected)} jobs fired today · {traceback_count} tracebacks · {reject_cell} in log tail_"
+    summary = f"_{len(fired)}/{len(expected)} jobs fired today · {tb_count} tracebacks · {reject_cell} in log tail_"
 
     rows = ["| job | fired today | section in yesterday's check-in |",
             "|---|---|---|"]
@@ -201,11 +272,13 @@ def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count:
             rows.append(f"| {r.name} | — | _{r.skipped_reason}_ |")
             continue
         if not r.fired:
-            fire_cell = f"❌ never" if r.fired_at_pt is None else f"❌ last: {r.fired_at_pt}"
+            crashed_suffix = " (crashed)" if r.tracebacks else ""
+            fire_cell = f"❌ never{crashed_suffix}" if r.fired_at_pt is None else f"❌ last: {r.fired_at_pt}{crashed_suffix}"
         elif r.fired_at_pt == "now":
             fire_cell = "✓ now (this run)"
         else:
-            fire_cell = f"✓ {r.fired_at_pt} PT"
+            crashed_suffix = " (crashed)" if r.tracebacks else ""
+            fire_cell = f"✓ {r.fired_at_pt} PT{crashed_suffix}"
         if r.section_present is None:
             section_cell = "—"
         elif not r.section_present:
@@ -217,7 +290,21 @@ def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count:
             section_cell = f"✓ {r.section_lines} lines{note}"
         rows.append(f"| {r.name} | {fire_cell} | {section_cell} |")
 
-    return "\n".join([
+    # Format traceback details at the bottom
+    diag_lines = []
+    if tracebacks:
+        counts = {}
+        for tb in tracebacks:
+            key = (tb["tool"], tb["summary"])
+            counts[key] = counts.get(key, 0) + 1
+            
+        diag_lines.append("")
+        diag_lines.append("### Tracebacks in log tail")
+        for (tool, summary_str), count in sorted(counts.items()):
+            count_str = f" ({count}x)" if count > 1 else ""
+            diag_lines.append(f"- **{tool}**: `{summary_str}`{count_str}")
+
+    parts = [
         f"## auto-review doctor — {today_pt.isoformat()}",
         "",
         summary,
@@ -225,9 +312,15 @@ def render_section(today_pt: dt.date, reports: list[JobReport], traceback_count:
         f"_reporting on yesterday's check-in: `journal/checkins/{yesterday.isoformat()}.md`_",
         "",
         *rows,
+    ]
+    if diag_lines:
+        parts.extend(diag_lines)
+    parts.extend([
         "",
         f"<!-- auto-review-doctor:daily={today_pt.isoformat()} generated_at={now_utc} -->",
-    ]) + "\n"
+    ])
+    
+    return "\n".join(parts) + "\n"
 
 
 def strip_and_replace(text: str, new_section: str) -> str:
@@ -310,8 +403,8 @@ def main() -> int:
     yesterday_text = yesterday_path.read_text(encoding="utf-8") if yesterday_path.exists() else ""
     weekly_text = weekly_path.read_text(encoding="utf-8") if weekly_path.exists() else ""
 
-    reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text)
-    tracebacks = count_tracebacks(log_lines)
+    tracebacks = find_tracebacks(log_lines)
+    reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text, tracebacks)
     push_rejections = count_push_rejections(log_lines)
     section = render_section(today_pt, reports, tracebacks, push_rejections)
 

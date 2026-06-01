@@ -1,15 +1,12 @@
-# doctor + health-watch
+# doctor + health-watch (retired)
 
-Cron-side health surface for the auto-review pipeline. Two tools in
-this directory:
+Cron-side health surface for the auto-review pipeline.
 
 - **`auto-review-doctor`** (v0) — deterministic daily liveness check.
   Counts "did each job fire and write a section?" and surfaces the
-  result as a table in today's check-in.
-- **`health-watch`** — LLM-driven daily investigation against a
-  bundled known-landmines playbook, gated to GREEN / NON-GREEN with
-  evidence. Lives alongside the doctor until the pipeline is
-  verifiably smooth.
+  result as a table in today's check-in. It is now the sole liveness check
+  running on the LXC runner (AUTO_REVIEW_RUNNER).
+- **`health-watch`** — (RETIRED) LLM-driven daily investigation. Previously run on openclaw.
 
 ---
 
@@ -85,15 +82,9 @@ clean GREEN verdicts. After that, re-evaluate whether to retire it,
 fold its checks into the doctor, or keep it running as a permanent
 second-line check.
 
-**Status (2026-05-31):** after the ADR-001 migration, the deterministic
-`auto-review-doctor` runs on the new host (AUTO_REVIEW_RUNNER) alongside the
-pipeline and is the primary liveness check. health-watch stays on
-openclaw as a non-critical, experimental second-line check (migration
-off openclaw was decided against — `auto-review-cq0` closed). Two known
-caveats while it lives there: its `cron.log` tail now only sees
-openclaw's own activity (the pipeline jobs log to .223), and its LLM
-call depends on the openclaw LiteLLM gateway being up. Revisit the log
-source and gateway reliability if health-watch gets serious use again.
+**Status (2026-06-01):** health-watch has been retired (bead auto-review-oo8).
+The deterministic `auto-review-doctor` runs on the LXC runner (AUTO_REVIEW_RUNNER)
+alongside the pipeline and is the sole liveness check.
 
 ---
 

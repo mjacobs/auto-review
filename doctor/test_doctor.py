@@ -111,7 +111,7 @@ def test_section_info_daily_present_and_scoped_per_tool():
 def test_assess_jobs_weekly_present_on_sunday():
     sunday = dt.date(2026, 5, 31)
     log = ["[main deadbee] vault-review: weekly recap 2026-05-31T17:01:01Z\n"]
-    reports = doctor.assess_jobs(log, sunday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE)
+    reports = doctor.assess_jobs(log, sunday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[])
     weekly = next(r for r in reports if r.name == "vault-review weekly")
     assert weekly.skipped_reason is None  # Sunday → not skipped
     assert weekly.fired is True
@@ -121,9 +121,43 @@ def test_assess_jobs_weekly_present_on_sunday():
 
 def test_assess_jobs_weekly_skipped_midweek():
     thursday = dt.date(2026, 5, 28)
-    reports = doctor.assess_jobs([], thursday, yesterday_checkin_text="", weekly_text="")
+    reports = doctor.assess_jobs([], thursday, yesterday_checkin_text="", weekly_text="", tracebacks=[])
     weekly = next(r for r in reports if r.name == "vault-review weekly")
     assert weekly.skipped_reason == "weekly — Sundays only"
+
+
+def test_find_tracebacks_empty():
+    assert doctor.find_tracebacks([]) == []
+
+
+def test_find_tracebacks_parses_real_traceback():
+    log = [
+        "Some random log line\n",
+        "Traceback (most recent call last):\n",
+        "  File \"/home/mj/.local/share/pipx/venvs/memex-review/lib/python3.10/site-packages/memex_review/client.py\", line 45, in get_thoughts\n",
+        "    raise HTTPError(res.status_code, res.text)\n",
+        "urllib.error.HTTPError: HTTP Error 500: Internal Server Error\n",
+        "Another log line\n"
+    ]
+    tbs = doctor.find_tracebacks(log)
+    assert len(tbs) == 1
+    assert tbs[0]["tool"] == "memex-review"
+    assert tbs[0]["summary"] == "HTTPError: HTTP Error 500: Internal Server Error (client.py:45)"
+
+
+def test_assess_jobs_reports_crash():
+    log = [
+        "Traceback (most recent call last):\n",
+        "  File \"/home/mj/.local/share/pipx/venvs/memex-review/lib/python3.10/site-packages/memex_review/client.py\", line 45, in get_thoughts\n",
+        "    raise HTTPError(res.status_code, res.text)\n",
+        "urllib.error.HTTPError: HTTP Error 500: Internal Server Error\n",
+    ]
+    tbs = doctor.find_tracebacks(log)
+    reports = doctor.assess_jobs(log, dt.date(2026, 5, 31), "", "", tbs)
+    memex = next(r for r in reports if r.name == "memex-review daily")
+    assert memex.fired is False
+    assert len(memex.tracebacks) == 1
+    assert "HTTPError" in memex.tracebacks[0]
 
 
 if __name__ == "__main__":
