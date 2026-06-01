@@ -80,20 +80,26 @@ def latest_match(lines: list[str], pattern: re.Pattern[str]) -> tuple[str, dt.da
     return last
 
 
-def section_info(text: str, tool: str, target_date: dt.date) -> tuple[bool, int, str]:
-    """Find `<!-- {tool}:daily={target_date} ... -->` and the matching `## {tool} —` heading.
+def section_info(text: str, tool: str, kind: str, label: str) -> tuple[bool, int, str]:
+    """Find `<!-- {tool}:{kind}={label} ... -->` and its matching `## {tool} …` heading.
+
+    `kind`/`label` are "daily"/"YYYY-MM-DD" or "weekly"/"YYYY-W##", matching the
+    marker each sibling emits (see vault-review's vault.py).
 
     Returns (present, line_count_inside, note).
     """
-    date_s = target_date.isoformat()
     close_marker = re.compile(
-        rf"^<!--\s*{re.escape(tool)}:daily={re.escape(date_s)}\s+generated_at=\S+\s*-->$",
+        rf"^<!--\s*{re.escape(tool)}:{re.escape(kind)}={re.escape(label)}\s+generated_at=\S+\s*-->$",
         re.MULTILINE,
     )
     cm = close_marker.search(text)
     if not cm:
         return (False, 0, "")
-    open_marker = re.compile(rf"^##\s+{re.escape(tool)}\s+—\s+{re.escape(date_s)}", re.MULTILINE)
+    # The close marker already pins tool+kind+label, so the section start is just
+    # the nearest `## {tool} …` heading before it. Don't key the heading on the
+    # date — weekly headings are keyed on the week, not a daily date. Consume the
+    # whole heading line so its text stays out of the body line count.
+    open_marker = re.compile(rf"^##\s+{re.escape(tool)}\b[^\n]*$", re.MULTILINE)
     om = None
     for m in open_marker.finditer(text):
         if m.start() < cm.start():
@@ -161,15 +167,17 @@ def assess_jobs(
         fired_today = ts_pt.date() == today_pt
         fired_at = ts_pt.strftime("%H:%M") if fired_today else f"({ts_pt.date().isoformat()})"
         if is_weekly:
-            present, lines, note = section_info(weekly_text, sibling_tool, today_pt - dt.timedelta(days=today_pt.weekday() + 1))
-            # weekly section's target_date is the week's Sunday — but vault-review
-            # uses ISO week tag. We just look for the section keyed on this week's
-            # Monday for now; if the format differs the line count falls to 0
-            # with section_present=True (close marker found, content empty).
-            # Acceptable v0 — verify after first weekly fire.
+            # The weekly cron runs `run-weekly last-week`, writing a section for the
+            # ISO week *before* the Sunday it fires, into journal/weekly/YYYY-W##.md
+            # keyed `:weekly=YYYY-W##`.
+            present, lines, note = section_info(
+                weekly_text, sibling_tool, "weekly", reported_week_label(today_pt)
+            )
         else:
             yesterday = today_pt - dt.timedelta(days=1)
-            present, lines, note = section_info(yesterday_checkin_text, sibling_tool, yesterday)
+            present, lines, note = section_info(
+                yesterday_checkin_text, sibling_tool, "daily", yesterday.isoformat()
+            )
         reports.append(JobReport(
             name=name, expected_hhmm=hhmm, fired=fired_today,
             fired_at_pt=fired_at, section_present=present, section_lines=lines,
@@ -261,9 +269,19 @@ def ensure_checkin(checkin_path: Path, date: dt.date) -> str:
     )
 
 
-def iso_week_path(vault: Path, date: dt.date) -> Path:
+def iso_week_label(date: dt.date) -> str:
     iso_year, iso_week, _ = date.isocalendar()
-    return vault / "journal" / "weekly" / f"{iso_year}-W{iso_week:02d}.md"
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def reported_week_label(today: dt.date) -> str:
+    """ISO-week label the Sunday weekly recap covers: `last-week` relative to the
+    run day, matching `vault-review run-weekly last-week`."""
+    return iso_week_label(today - dt.timedelta(weeks=1))
+
+
+def weekly_note_path(vault: Path, week_label: str) -> Path:
+    return vault / "journal" / "weekly" / f"{week_label}.md"
 
 
 def main() -> int:
@@ -287,7 +305,7 @@ def main() -> int:
     checkin_dir = args.vault / "journal" / "checkins"
     yesterday_path = checkin_dir / f"{yesterday_pt.isoformat()}.md"
     today_path = checkin_dir / f"{today_pt.isoformat()}.md"
-    weekly_path = iso_week_path(args.vault, today_pt)
+    weekly_path = weekly_note_path(args.vault, reported_week_label(today_pt))
 
     yesterday_text = yesterday_path.read_text(encoding="utf-8") if yesterday_path.exists() else ""
     weekly_text = weekly_path.read_text(encoding="utf-8") if weekly_path.exists() else ""
