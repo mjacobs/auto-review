@@ -162,13 +162,15 @@ def _fetch_session_rows(conn, start: dt.datetime, end: dt.datetime) -> list[dict
             f"""
             SELECT *
               FROM {schema}.sessions
-             WHERE started_at < %s
-               AND COALESCE(ended_at, started_at) >= %s
+             WHERE (
+                    (started_at >= %s AND started_at < %s)
+                 OR (ended_at >= %s AND ended_at < %s)
+               )
                AND is_automated = false
                AND deleted_at IS NULL
              ORDER BY started_at
             """,
-            (end, start),
+            (start, end, start, end),
         )
         return list(cur.fetchall())
 

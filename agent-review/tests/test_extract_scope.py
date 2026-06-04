@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
 
-from agent_review.extract import SessionBundle, ToolSummary, _is_in_scope
+import pytest
+
+import agent_review.extract as extract_mod
+from agent_review.extract import SessionBundle, ToolSummary, _fetch_session_rows, _is_in_scope
 
 
 def _bundle(
@@ -61,3 +65,49 @@ def test_unknown_outcome_with_substantial_tool_activity_is_in_scope():
 
 def test_known_outcome_read_only_session_can_still_be_in_scope():
     assert _is_in_scope(_bundle(outcome="progressed", files_touched=[])) is True
+
+
+def test_fetch_session_rows_matches_start_or_end_day_not_broad_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        extract_mod,
+        "get_settings",
+        lambda: SimpleNamespace(pg_schema="agentsview"),
+    )
+    start = dt.datetime(2026, 5, 16, tzinfo=dt.UTC)
+    end = start + dt.timedelta(days=1)
+    cursor = _Cursor()
+    rows = _fetch_session_rows(_Conn(cursor), start, end)
+
+    assert rows == []
+    assert "COALESCE(ended_at, started_at) >= %s" not in cursor.sql
+    assert "(started_at >= %s AND started_at < %s)" in cursor.sql
+    assert "(ended_at >= %s AND ended_at < %s)" in cursor.sql
+    assert cursor.params == (start, end, start, end)
+
+
+class _Cursor:
+    sql = ""
+    params = ()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql, params):
+        self.sql = sql
+        self.params = params
+
+    def fetchall(self):
+        return []
+
+
+class _Conn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
