@@ -87,6 +87,11 @@ move past yesterday — for safety against fat-fingering a future date.
 The cursor lives in the vault at `<vault>/state/memex-review.yaml` so it
 syncs across machines alongside the check-in notes themselves.
 
+If no cursor file exists yet, `run <date>` treats the start of the
+requested date as the temporary cursor. That keeps a first manual
+`memex-review run yesterday` useful while still letting `process` commit
+the durable cursor once the inbox has been triaged.
+
 ## Configuration
 
 Set via environment or `.env` in the working directory:

@@ -90,7 +90,7 @@ def _run_one(date: dt.date, *, dry_run: bool, do_print: bool) -> None:
     click.echo(f"\n=== {date.isoformat()} ({s.tz_name}) ===", err=True)
 
     thoughts = collect_for_date(date, settings=s)
-    cursor = load_cursor(s)
+    cursor = _cursor_for_run(date, s)
     visible = filter_visible(thoughts, cursor)
     click.echo(
         f"  {len(visible)} visible / {len(thoughts)} fetched (cursor {cursor.isoformat()})",
@@ -110,6 +110,12 @@ def _run_one(date: dt.date, *, dry_run: bool, do_print: bool) -> None:
 
     path = write_daily_section(date, section_md)
     click.echo(f"  wrote section → {path}", err=True)
+
+
+def _cursor_for_run(date: dt.date, s: Settings) -> dt.datetime:
+    if cursor_path(s).exists():
+        return load_cursor(s)
+    return dt.datetime.combine(date, dt.time.min, tzinfo=s.tz)
 
 
 @main.command()

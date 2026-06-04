@@ -55,5 +55,9 @@ def test_unknown_outcome_with_file_write_activity_is_in_scope():
     assert _is_in_scope(_bundle(files_touched=["agent_review/digest.py"])) is True
 
 
+def test_unknown_outcome_with_substantial_tool_activity_is_in_scope():
+    assert _is_in_scope(_bundle(total_calls=10, files_touched=[])) is True
+
+
 def test_known_outcome_read_only_session_can_still_be_in_scope():
     assert _is_in_scope(_bundle(outcome="progressed", files_touched=[])) is True

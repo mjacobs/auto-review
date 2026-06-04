@@ -103,10 +103,10 @@ def test_run_for_past_date_below_cursor_renders_empty(
     assert "_no captures in window_" in result.output
 
 
-def test_run_bootstrap_hides_pre_today_shows_today(
+def test_run_bootstrap_uses_requested_date_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No cursor file → bootstrap = today 00:00 local; today's captures show, prior days hide."""
+    """No cursor file -> run uses the requested date start as its cursor."""
     today_local = dt.datetime.now(tz=LA).date()
     today_iso = today_local.isoformat()
 
@@ -150,5 +150,5 @@ def test_run_bootstrap_hides_pre_today_shows_today(
 
     r2 = CliRunner().invoke(main, ["run", yest.isoformat(), "--dry-run", "--print"])
     assert r2.exit_code == 0, r2.output
-    assert "yest-cap" not in r2.output
-    assert "_no captures in window_" in r2.output
+    assert "yest-cap" in r2.output
+    assert f"_window: {yest.isoformat()} — 1 capture_" in r2.output

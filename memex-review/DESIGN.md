@@ -103,10 +103,11 @@ cursor: 2026-05-17T23:59:59-07:00   # ISO-8601 with tz
 ```
 
 **Bootstrap.** On first run with no cursor file, `load_cursor` returns
-start-of-today local but does *not* persist it. The bootstrap is committed
-the first time the user runs `process` (or `cursor --init`). This means
-out-of-the-box `run` behavior already hides pre-today captures without
-any setup.
+start-of-today local for `memex-review cursor` but does *not* persist it.
+For `run <date>`, the CLI uses start-of-requested-date as the temporary
+cursor until a real cursor file exists. This keeps a first manual
+`run yesterday` useful while preserving explicit cursor advancement as
+the durable processing signal.
 
 **Filter site.** The cursor is applied between fetch and render in the
 CLI. `client.collect_thoughts` stays cursor-unaware (pure data fetch);

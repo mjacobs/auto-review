@@ -27,6 +27,7 @@ from .redaction import redact
 
 MAX_MSG_CHARS = 8 * 1024            # truncate any single message above this
 MIN_MESSAGES_FOR_SCOPE = 3          # below this, only count sessions with tool calls
+MIN_TOOL_CALLS_FOR_UNKNOWN_SCOPE = 10
 MAX_TOP_COMMANDS = 10
 MAX_FILES_TOUCHED = 30
 TRIVIAL_SLASH_COMMANDS = re.compile(
@@ -161,12 +162,13 @@ def _fetch_session_rows(conn, start: dt.datetime, end: dt.datetime) -> list[dict
             f"""
             SELECT *
               FROM {schema}.sessions
-             WHERE started_at >= %s AND started_at < %s
+             WHERE started_at < %s
+               AND COALESCE(ended_at, started_at) >= %s
                AND is_automated = false
                AND deleted_at IS NULL
              ORDER BY started_at
             """,
-            (start, end),
+            (end, start),
         )
         return list(cur.fetchall())
 
@@ -393,8 +395,13 @@ def _is_in_scope(b: SessionBundle) -> bool:
     # 2. Below message threshold AND no tool calls
     if b.message_count < MIN_MESSAGES_FOR_SCOPE and b.tool_summary.total_calls == 0:
         return False
-    # 3. Unknown-outcome sessions must show concrete write/edit activity.
-    return b.outcome != "unknown" or _has_file_write_activity(b)
+    # 3. Unknown-outcome sessions are kept when they either produced concrete
+    # artifacts or had enough tool activity to be meaningful investigation.
+    return (
+        b.outcome != "unknown"
+        or _has_file_write_activity(b)
+        or b.tool_summary.total_calls >= MIN_TOOL_CALLS_FOR_UNKNOWN_SCOPE
+    )
 
 
 def _has_file_write_activity(b: SessionBundle) -> bool:
