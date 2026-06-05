@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import sys
+import tempfile
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -212,6 +213,90 @@ def test_assess_jobs_weekly_present_on_sunday_with_reported_label():
     assert weekly.fired is True
     assert weekly.section_present is True
     assert weekly.section_lines >= 3
+
+
+# ─── self-liveness: the doctor monitoring its own missed runs (g52) ────────────
+
+
+def _write_doctor_checkins(checkin_dir: Path, dates: list[dt.date]) -> None:
+    """Write a minimal check-in note carrying the doctor's own close-marker for
+    each given date."""
+    checkin_dir.mkdir(parents=True, exist_ok=True)
+    for d in dates:
+        iso = d.isoformat()
+        (checkin_dir / f"{iso}.md").write_text(
+            f"# check-in — {iso}\n\n## auto-review doctor — {iso}\n\n"
+            f"<!-- auto-review-doctor:daily={iso} generated_at={iso}T22:01:00Z -->\n",
+            encoding="utf-8",
+        )
+
+
+def test_doctor_self_liveness_no_gaps():
+    today = dt.date(2026, 6, 5)
+    with tempfile.TemporaryDirectory() as tmp:
+        checkin_dir = Path(tmp) / "checkins"
+        # doctor section present every prior day in the window
+        _write_doctor_checkins(checkin_dir, [today - dt.timedelta(days=n) for n in range(1, 5)])
+        last_present, gaps = doctor.doctor_self_liveness(checkin_dir, today)
+    assert last_present == today - dt.timedelta(days=1)
+    assert gaps == []
+
+
+def test_doctor_self_liveness_detects_consecutive_gap():
+    # The motivating incident: doctor ran 3 days ago, then silently missed the
+    # next two nights. Surfaced the moment it runs again.
+    today = dt.date(2026, 6, 5)
+    with tempfile.TemporaryDirectory() as tmp:
+        checkin_dir = Path(tmp) / "checkins"
+        _write_doctor_checkins(checkin_dir, [today - dt.timedelta(days=3)])
+        last_present, gaps = doctor.doctor_self_liveness(checkin_dir, today)
+    assert last_present == today - dt.timedelta(days=3)
+    assert gaps == [today - dt.timedelta(days=2), today - dt.timedelta(days=1)]
+
+
+def test_doctor_self_liveness_no_prior_runs_is_quiet_on_pre_existence():
+    today = dt.date(2026, 6, 5)
+    with tempfile.TemporaryDirectory() as tmp:
+        checkin_dir = Path(tmp) / "checkins"
+        checkin_dir.mkdir()
+        last_present, gaps = doctor.doctor_self_liveness(checkin_dir, today)
+    assert last_present is None
+    assert gaps == []  # don't flag days before the doctor ever ran
+
+
+def test_format_self_liveness_variants():
+    today = dt.date(2026, 6, 5)
+    healthy = doctor.format_self_liveness(today, today - dt.timedelta(days=1), [])
+    assert "no gaps" in healthy and "⚠️" not in healthy
+    gapped = doctor.format_self_liveness(
+        today, today - dt.timedelta(days=3), [today - dt.timedelta(days=2)]
+    )
+    assert "⚠️" in gapped and "2026-06-03" in gapped
+    never = doctor.format_self_liveness(today, None, [])
+    assert "⚠️" in never and "ever run" in never
+
+
+def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
+    today = dt.date(2026, 5, 31)
+    # yesterday's check-in is MISSING the doctor's own section
+    yesterday_text = "# check-in — 2026-05-30\n\n## vault-review — 2026-05-30\n"
+    reports = doctor.assess_jobs(
+        [], today, yesterday_checkin_text=yesterday_text, weekly_text="", tracebacks=[]
+    )
+    doc = next(r for r in reports if r.name == "auto-review-doctor daily")
+    assert doc.fired is True  # this very run
+    assert doc.section_present is False  # honestly reports yesterday's gap
+
+    # now with yesterday's doctor section present
+    present_text = (
+        "# check-in — 2026-05-30\n\n## auto-review doctor — 2026-05-30\n\n"
+        "- all good\n\n<!-- auto-review-doctor:daily=2026-05-30 generated_at=2026-05-31T05:01:00Z -->\n"
+    )
+    reports2 = doctor.assess_jobs(
+        [], today, yesterday_checkin_text=present_text, weekly_text="", tracebacks=[]
+    )
+    doc2 = next(r for r in reports2 if r.name == "auto-review-doctor daily")
+    assert doc2.section_present is True
 
 
 if __name__ == "__main__":

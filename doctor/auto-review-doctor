@@ -27,6 +27,9 @@ UTC = ZoneInfo("UTC")
 DEFAULT_LOG = Path.home() / ".local/state/auto-review/cron.log"
 DEFAULT_VAULT = Path.home() / "vault"
 TAIL_LINES = 1000
+# How many prior days the doctor scans for its OWN section, to detect missed
+# runs (the motivating failure: consecutive silent misses nobody noticed).
+SELF_LIVENESS_WINDOW = 7
 
 # (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?, marker_key)
 JOBS = [
@@ -207,13 +210,20 @@ def assess_jobs(
             ))
             continue
         if sibling_tool == "auto-review-doctor":
-            # Self-row. We can't see our own commit yet (it happens after this
-            # script exits, in the cron wrapper), and our own section is the
-            # one being rendered right now. Hardcode both cells to reflect that.
+            # Self-row. We can't see our own commit in the log yet (it happens
+            # after this script exits, in the cron wrapper), so "fired" reflects
+            # this very run. But the section cell is now a REAL check of
+            # yesterday's check-in for our own marker — that's our day-to-day
+            # liveness signal. Multi-day gaps are surfaced separately by the
+            # self-liveness line (see doctor_self_liveness).
+            yday = today_pt - dt.timedelta(days=1)
+            present, lines, note = section_info(
+                yesterday_checkin_text, "auto-review-doctor", "daily", yday.isoformat()
+            )
             reports.append(JobReport(
                 name=name, expected_hhmm=hhmm, fired=True, fired_at_pt="now",
-                section_present=True, section_lines=None, section_note="self — see this section",
-                skipped_reason=None,
+                section_present=present, section_lines=lines,
+                section_note=note or "self", skipped_reason=None,
                 tracebacks=[],
             ))
             continue
@@ -255,7 +265,25 @@ def assess_jobs(
     return reports
 
 
-def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int) -> str:
+def format_self_liveness(today_pt: dt.date, last_present: dt.date | None, gaps: list[dt.date]) -> str:
+    """One-line in-band liveness of the doctor itself, over the lookback window."""
+    if last_present is None:
+        return (
+            f"_⚠️ doctor self-liveness: no doctor section found in the last "
+            f"{SELF_LIVENESS_WINDOW} days — has this job ever run?_"
+        )
+    days_ago = (today_pt - last_present).days
+    ago = "yesterday" if days_ago == 1 else f"{days_ago}d ago"
+    if gaps:
+        missed = ", ".join(d.isoformat() for d in gaps)
+        return (
+            f"_⚠️ doctor self-liveness: last section {last_present.isoformat()} "
+            f"({ago}) — missed run(s): {missed}_"
+        )
+    return f"_doctor self-liveness: last section {last_present.isoformat()} ({ago}) — no gaps_"
+
+
+def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int, self_liveness: tuple[dt.date | None, list[dt.date]]) -> str:
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     expected = [r for r in reports if r.skipped_reason is None]
     fired = [r for r in expected if r.fired]
@@ -304,10 +332,13 @@ def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list
             count_str = f" ({count}x)" if count > 1 else ""
             diag_lines.append(f"- **{tool}**: `{summary_str}`{count_str}")
 
+    last_present, gaps = self_liveness
     parts = [
         f"## auto-review doctor — {today_pt.isoformat()}",
         "",
         summary,
+        "",
+        format_self_liveness(today_pt, last_present, gaps),
         "",
         f"_reporting on yesterday's check-in: `journal/checkins/{yesterday.isoformat()}.md`_",
         "",
@@ -377,6 +408,35 @@ def weekly_note_path(vault: Path, week_label: str) -> Path:
     return vault / "journal" / "weekly" / f"{week_label}.md"
 
 
+def doctor_self_liveness(
+    checkin_dir: Path, today_pt: dt.date, window_days: int = SELF_LIVENESS_WINDOW
+) -> tuple[dt.date | None, list[dt.date]]:
+    """Scan the prior `window_days` check-ins for the doctor's OWN daily marker.
+
+    Returns (last_present_date, gap_dates) over [today-window .. today-1]. Today
+    is excluded — this very run writes today's section. `gap_dates` are missing
+    days that fall *after* the doctor's earliest seen run in the window, so we
+    don't flag days before the doctor existed. This catches the motivating
+    failure — consecutive silent misses — the moment the doctor runs again, with
+    no side-channel or extra cron.
+    """
+    present: list[dt.date] = []
+    missing: list[dt.date] = []
+    for delta in range(1, window_days + 1):
+        d = today_pt - dt.timedelta(days=delta)
+        path = checkin_dir / f"{d.isoformat()}.md"
+        marker = re.compile(rf"auto-review-doctor:daily={re.escape(d.isoformat())}\b")
+        if path.exists() and marker.search(path.read_text(encoding="utf-8")):
+            present.append(d)
+        else:
+            missing.append(d)
+    if not present:
+        return None, []
+    earliest = min(present)
+    gaps = sorted(d for d in missing if d > earliest)
+    return max(present), gaps
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="auto-review doctor v0")
     ap.add_argument("--log", type=Path, default=DEFAULT_LOG, help=f"cron.log path (default: {DEFAULT_LOG})")
@@ -406,7 +466,8 @@ def main() -> int:
     tracebacks = find_tracebacks(log_lines)
     reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text, tracebacks)
     push_rejections = count_push_rejections(log_lines)
-    section = render_section(today_pt, reports, tracebacks, push_rejections)
+    self_liveness = doctor_self_liveness(checkin_dir, today_pt)
+    section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness)
 
     if args.dry_run:
         sys.stdout.write(section)
