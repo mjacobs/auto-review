@@ -145,7 +145,10 @@ def section_info(text: str, tool: str, marker_key: str, label: str) -> tuple[boo
     # the nearest `## {tool} …` heading before it. Don't key the heading on the
     # date — weekly headings are keyed on the week, not a daily date. Consume the
     # whole heading line so its text stays out of the body line count.
-    open_marker = re.compile(rf"^##\s+{re.escape(tool)}\b[^\n]*$", re.MULTILINE)
+    # Hyphens in the tool name may render as spaces in the heading (e.g. marker
+    # `auto-review-doctor` → heading `## auto-review doctor`), so match either.
+    tool_pat = re.escape(tool).replace(r"\-", "[- ]")
+    open_marker = re.compile(rf"^##\s+{tool_pat}\b[^\n]*$", re.MULTILINE)
     om = None
     for m in open_marker.finditer(text):
         if m.start() < cm.start():

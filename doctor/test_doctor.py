@@ -297,6 +297,10 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
     )
     doc2 = next(r for r in reports2 if r.name == "auto-review-doctor daily")
     assert doc2.section_present is True
+    # The spaced heading "## auto-review doctor" must match the hyphenated marker
+    # tool, so the body line count is real (not the "open heading missing" wart).
+    assert doc2.section_lines == 1
+    assert "open heading missing" not in doc2.section_note
 
 
 # ─── moving-pieces registry (9nr) ──────────────────────────────────────────────
