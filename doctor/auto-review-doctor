@@ -28,13 +28,13 @@ DEFAULT_LOG = Path.home() / ".local/state/auto-review/cron.log"
 DEFAULT_VAULT = Path.home() / "vault"
 TAIL_LINES = 1000
 
-# (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?)
+# (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?, marker_key)
 JOBS = [
-    ("vault-review daily",       "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),    "vault-review",        False),
-    ("memex-review daily",       "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),    "memex-review",        False),
-    ("agent-review daily",       "21:01", re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),   "agent-review",        False),
-    ("auto-review-doctor daily", "22:01", re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"), "auto-review-doctor", False),
-    ("vault-review weekly",      "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),   "vault-review",        True),
+    ("vault-review daily",       "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),    "vault-review",        False, "daily"),
+    ("memex-review daily",       "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),    "memex-review",        False, "daily"),
+    ("agent-review daily",       "21:01", re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),   "agent-review",        False, "report_date"),
+    ("auto-review-doctor daily", "22:01", re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"), "auto-review-doctor", False, "daily"),
+    ("vault-review weekly",      "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),   "vault-review",        True,  "weekly"),
 ]
 
 DOCTOR_MARKER_OPEN  = re.compile(r"^## auto-review doctor — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
@@ -81,16 +81,16 @@ def latest_match(lines: list[str], pattern: re.Pattern[str]) -> tuple[str, dt.da
     return last
 
 
-def section_info(text: str, tool: str, kind: str, label: str) -> tuple[bool, int, str]:
-    """Find `<!-- {tool}:{kind}={label} ... -->` and its matching `## {tool} …` heading.
+def section_info(text: str, tool: str, marker_key: str, label: str) -> tuple[bool, int, str]:
+    """Find `<!-- {tool}:{marker_key}={label} ... -->` and its matching `## {tool} …` heading.
 
-    `kind`/`label` are "daily"/"YYYY-MM-DD" or "weekly"/"YYYY-W##", matching the
+    `marker_key`/`label` are "daily"/"YYYY-MM-DD" or "weekly"/"YYYY-W##", matching the
     marker each sibling emits (see vault-review's vault.py).
 
     Returns (present, line_count_inside, note).
     """
     close_marker = re.compile(
-        rf"^<!--\s*{re.escape(tool)}:{re.escape(kind)}={re.escape(label)}\s+generated_at=\S+\s*-->$",
+        rf"^<!--\s*{re.escape(tool)}:{re.escape(marker_key)}={re.escape(label)}\s+generated_at=\S+\s*-->$",
         re.MULTILINE,
     )
     cm = close_marker.search(text)
@@ -197,7 +197,7 @@ def assess_jobs(
 ) -> list[JobReport]:
     is_sunday = today_pt.weekday() == 6
     reports: list[JobReport] = []
-    for name, hhmm, regex, sibling_tool, is_weekly in JOBS:
+    for name, hhmm, regex, sibling_tool, is_weekly, marker_key in JOBS:
         if is_weekly and not is_sunday:
             reports.append(JobReport(
                 name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
@@ -239,12 +239,12 @@ def assess_jobs(
             # ISO week *before* the Sunday it fires, into journal/weekly/YYYY-W##.md
             # keyed `:weekly=YYYY-W##`.
             present, lines, note = section_info(
-                weekly_text, sibling_tool, "weekly", reported_week_label(today_pt)
+                weekly_text, sibling_tool, marker_key, reported_week_label(today_pt)
             )
         else:
             yesterday = today_pt - dt.timedelta(days=1)
             present, lines, note = section_info(
-                yesterday_checkin_text, sibling_tool, "daily", yesterday.isoformat()
+                yesterday_checkin_text, sibling_tool, marker_key, yesterday.isoformat()
             )
         reports.append(JobReport(
             name=name, expected_hhmm=hhmm, fired=fired_today,

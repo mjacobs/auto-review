@@ -160,9 +160,64 @@ def test_assess_jobs_reports_crash():
     assert "HTTPError" in memex.tracebacks[0]
 
 
+def test_section_info_agent_review_daily_present():
+    note = """\
+# check-in — 2026-05-30
+
+## agent-review — 2026-05-30
+
+- did some work
+- agent was busy
+
+<!-- agent-review:report_date=2026-05-30 generated_at=2026-05-31T04:01:01Z -->
+"""
+    present, lines, note_str = doctor.section_info(
+        note, "agent-review", "report_date", "2026-05-30"
+    )
+    assert present is True
+    assert lines == 2
+    assert note_str == ""
+
+
+def test_assess_jobs_agent_review_daily_present():
+    today = dt.date(2026, 5, 31)
+    yesterday_text = """\
+# check-in — 2026-05-30
+
+## agent-review — 2026-05-30
+
+- did some work
+- agent was busy
+
+<!-- agent-review:report_date=2026-05-30 generated_at=2026-05-31T04:01:01Z -->
+"""
+    log = ["[main deadbee] agent-review: daily report 2026-05-31T21:01:01Z\n"]
+    reports = doctor.assess_jobs(log, today, yesterday_checkin_text=yesterday_text, weekly_text="", tracebacks=[])
+    agent = next(r for r in reports if r.name == "agent-review daily")
+    assert agent.fired is True
+    assert agent.section_present is True
+    assert agent.section_lines == 2
+
+
+def test_assess_jobs_weekly_present_on_sunday_with_reported_label():
+    # Tests that when we run on a Sunday, the weekly section is looked up with
+    # the correct reported_week_label and weekly marker-key, and is found.
+    sunday = dt.date(2026, 5, 31)
+    log = ["[main deadbee] vault-review: weekly recap 2026-05-31T17:01:01Z\n"]
+    reports = doctor.assess_jobs(
+        log, sunday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[]
+    )
+    weekly = next(r for r in reports if r.name == "vault-review weekly")
+    assert weekly.skipped_reason is None
+    assert weekly.fired is True
+    assert weekly.section_present is True
+    assert weekly.section_lines >= 3
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()
         print(f"ok  {fn.__name__}")
     print(f"\n{len(fns)} passed")
+
