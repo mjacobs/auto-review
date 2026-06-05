@@ -31,13 +31,55 @@ TAIL_LINES = 1000
 # runs (the motivating failure: consecutive silent misses nobody noticed).
 SELF_LIVENESS_WINDOW = 7
 
-# (job_id, cron_hhmm_PT, commit_regex, sibling_marker_tool, weekly?, marker_key)
+@dataclass(frozen=True)
+class Job:
+    """One entry in the periodic-process registry — the single source of truth
+    for the moving pieces of the auto-review stack.
+
+    Monitored entries also carry the fields the doctor uses to check liveness;
+    UNMONITORED infra is catalogued (monitored=False) so the registry lists
+    EVERYTHING and the 'monitored?' column in the generated moving-pieces doc
+    surfaces coverage gaps. ANY change to the periodic-job stack MUST update
+    this list (see AGENTS.md → "Periodic-process registry").
+    """
+    name: str
+    host: str
+    cadence: str          # human-readable expected schedule (for the doc)
+    writes: str           # what it produces
+    monitored: bool       # does the doctor check this job's liveness?
+    # ── liveness config — only meaningful when monitored ──
+    hhmm: str = ""                              # expected fire time PT
+    commit_regex: re.Pattern[str] | None = None
+    marker_tool: str = ""
+    marker_key: str = ""
+    is_weekly: bool = False
+
+
+# The canonical registry. Monitored crons first, then catalogued-but-unmonitored
+# moving pieces (the coverage gaps). Keep this in sync with reality — the doctor
+# both checks liveness AND regenerates reference/auto-review/moving-pieces.md
+# from it, so a stale row here is a stale dashboard there.
 JOBS = [
-    ("vault-review daily",       "20:01", re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),    "vault-review",        False, "daily"),
-    ("memex-review daily",       "20:31", re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),    "memex-review",        False, "daily"),
-    ("agent-review daily",       "21:01", re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),   "agent-review",        False, "report_date"),
-    ("auto-review-doctor daily", "22:01", re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"), "auto-review-doctor", False, "daily"),
-    ("vault-review weekly",      "10:01", re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),   "vault-review",        True,  "weekly"),
+    Job("vault-review daily", "auto-review LXC (.223)", "20:01 PT daily", "check-in § (daily recap)", True,
+        hhmm="20:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),
+        marker_tool="vault-review", marker_key="daily"),
+    Job("memex-review daily", "auto-review LXC (.223)", "20:31 PT daily", "check-in § (daily inbox)", True,
+        hhmm="20:31", commit_regex=re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),
+        marker_tool="memex-review", marker_key="daily"),
+    Job("agent-review daily", "auto-review LXC (.223)", "21:01 PT daily", "check-in § (daily report)", True,
+        hhmm="21:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),
+        marker_tool="agent-review", marker_key="report_date"),
+    Job("auto-review-doctor daily", "auto-review LXC (.223)", "22:01 PT daily", "check-in § (health)", True,
+        hhmm="22:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
+        marker_tool="auto-review-doctor", marker_key="daily"),
+    Job("vault-review weekly", "auto-review LXC (.223)", "Sun 10:01 PT", "weekly § (weekly recap)", True,
+        hhmm="10:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
+        marker_tool="vault-review", marker_key="weekly", is_weekly=True),
+    # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
+    Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),
+    Job("vault-agent capture", "openclaw", "harness-driven", "vault snapshots", False),
+    Job("LiteLLM gateway", "portainer (.199)", "always-on (docker)", "LLM proxy endpoint", False),
+    Job("logrotate", "auto-review LXC (.223)", "23:00 PT daily", "rotates cron.log", False),
 ]
 
 DOCTOR_MARKER_OPEN  = re.compile(r"^## auto-review doctor — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
@@ -200,7 +242,12 @@ def assess_jobs(
 ) -> list[JobReport]:
     is_sunday = today_pt.weekday() == 6
     reports: list[JobReport] = []
-    for name, hhmm, regex, sibling_tool, is_weekly, marker_key in JOBS:
+    for job in JOBS:
+        if not job.monitored:
+            continue  # catalogued infra; liveness not checked (see moving-pieces doc)
+        name, hhmm, regex, sibling_tool, is_weekly, marker_key = (
+            job.name, job.hhmm, job.commit_regex, job.marker_tool, job.is_weekly, job.marker_key,
+        )
         if is_weekly and not is_sunday:
             reports.append(JobReport(
                 name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
@@ -437,6 +484,37 @@ def doctor_self_liveness(
     return max(present), gaps
 
 
+def render_moving_pieces(today_pt: dt.date, registry: list[Job] = JOBS) -> str:
+    """Render the periodic-process registry as a standalone markdown dashboard.
+
+    Generated from the same JOBS registry the doctor uses for liveness, so the
+    dashboard cannot drift from what's actually monitored. The 'monitored?'
+    column makes coverage gaps (unmonitored moving pieces) visible at a glance.
+    """
+    now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monitored = [j for j in registry if j.monitored]
+    lines = [
+        "# Moving pieces — auto-review periodic-process registry",
+        "",
+        f"_Generated by auto-review doctor on {today_pt.isoformat()} — DO NOT EDIT BY HAND._",
+        "_Source of truth: the `JOBS` registry in `doctor/auto-review-doctor`; "
+        "any stack change must update it (see AGENTS.md)._",
+        f"_{len(monitored)}/{len(registry)} pieces are liveness-monitored by the doctor; "
+        "⚠️ rows are coverage gaps._",
+        "",
+        "| process | host | cadence | writes | monitored? |",
+        "|---|---|---|---|---|",
+    ]
+    for j in registry:
+        if j.monitored:
+            mon = "✅ self" if j.marker_tool == "auto-review-doctor" else "✅"
+        else:
+            mon = "⚠️ no"
+        lines.append(f"| {j.name} | {j.host} | {j.cadence} | {j.writes} | {mon} |")
+    lines += ["", f"<!-- auto-review-doctor:moving-pieces generated_at={now_utc} -->", ""]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="auto-review doctor v0")
     ap.add_argument("--log", type=Path, default=DEFAULT_LOG, help=f"cron.log path (default: {DEFAULT_LOG})")
@@ -468,9 +546,12 @@ def main() -> int:
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)
     section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness)
+    moving_pieces = render_moving_pieces(today_pt)
 
     if args.dry_run:
         sys.stdout.write(section)
+        sys.stdout.write("\n----- reference/auto-review/moving-pieces.md -----\n")
+        sys.stdout.write(moving_pieces)
         return 0
 
     today_text = ensure_checkin(today_path, today_pt)
@@ -478,9 +559,16 @@ def main() -> int:
     today_path.parent.mkdir(parents=True, exist_ok=True)
     today_path.write_text(new_text, encoding="utf-8")
 
+    # Regenerate the moving-pieces registry dashboard (whole-file rewrite — the
+    # registry is the source of truth, so this is an overwrite, not a merge).
+    mp_path = args.vault / "reference" / "auto-review" / "moving-pieces.md"
+    mp_path.parent.mkdir(parents=True, exist_ok=True)
+    mp_path.write_text(moving_pieces, encoding="utf-8")
+
     if args.print:
         sys.stdout.write(section)
     print(f"auto-review-doctor: wrote section → {today_path}", file=sys.stderr)
+    print(f"auto-review-doctor: wrote registry → {mp_path}", file=sys.stderr)
     return 0
 
 

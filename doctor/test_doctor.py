@@ -299,6 +299,40 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
     assert doc2.section_present is True
 
 
+# ─── moving-pieces registry (9nr) ──────────────────────────────────────────────
+
+
+def test_registry_monitored_jobs_have_liveness_config():
+    # Every monitored job must carry the fields the doctor needs to check it;
+    # unmonitored infra must NOT pretend to have liveness config.
+    for j in doctor.JOBS:
+        if j.monitored:
+            assert j.commit_regex is not None, f"{j.name}: monitored but no commit_regex"
+            assert j.marker_tool, f"{j.name}: monitored but no marker_tool"
+            assert j.marker_key, f"{j.name}: monitored but no marker_key"
+            assert j.hhmm, f"{j.name}: monitored but no expected time"
+        else:
+            assert j.commit_regex is None and not j.marker_tool
+
+
+def test_registry_has_both_monitored_and_coverage_gaps():
+    monitored = [j for j in doctor.JOBS if j.monitored]
+    gaps = [j for j in doctor.JOBS if not j.monitored]
+    assert len(monitored) >= 5
+    assert len(gaps) >= 1  # the whole point: catalog what ISN'T watched
+
+
+def test_render_moving_pieces_lists_all_with_coverage_flags():
+    today = dt.date(2026, 6, 5)
+    doc = doctor.render_moving_pieces(today)
+    # every registry entry appears
+    for j in doctor.JOBS:
+        assert j.name in doc, f"{j.name} missing from moving-pieces doc"
+    assert "✅" in doc and "⚠️ no" in doc  # both monitored and gap rows rendered
+    assert "DO NOT EDIT BY HAND" in doc
+    assert "auto-review-doctor:moving-pieces" in doc  # close marker for idempotent rewrite
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
