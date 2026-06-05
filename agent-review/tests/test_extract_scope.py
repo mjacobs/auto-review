@@ -8,7 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 import agent_review.extract as extract_mod
-from agent_review.extract import SessionBundle, ToolSummary, _fetch_session_rows, _is_in_scope
+from agent_review.extract import (
+    SessionBundle,
+    ToolSummary,
+    _fetch_session_rows,
+    _infer_project,
+    _is_in_scope,
+)
 
 
 def _bundle(
@@ -65,6 +71,50 @@ def test_unknown_outcome_with_substantial_tool_activity_is_in_scope():
 
 def test_known_outcome_read_only_session_can_still_be_in_scope():
     assert _is_in_scope(_bundle(outcome="progressed", files_touched=[])) is True
+
+
+@pytest.mark.parametrize(
+    ("cwd", "expected"),
+    [
+        ("/home/mj/dev/projects/agentsview", "agentsview"),
+        ("/home/mj/dev/projects/agentsview/sub/dir", "agentsview"),
+        ("/home/mj/dev/someproj", "someproj"),
+    ],
+)
+def test_infer_project_prefers_specific_cwd_hint(cwd: str, expected: str):
+    project, source = _infer_project(
+        {"cwd": cwd, "git_branch": "main", "project": "workspace"}
+    )
+
+    assert project == expected
+    assert source == "cwd"
+
+
+@pytest.mark.parametrize("cwd", ["/home/mj/dev", "/home/mj/dev/projects"])
+def test_infer_project_never_returns_hint_parent_words(cwd: str):
+    project, _source = _infer_project(
+        {"cwd": cwd, "git_branch": "main", "project": "workspace"}
+    )
+
+    assert project not in extract_mod._PROJECT_HINT_PARENTS
+
+
+def test_infer_project_falls_back_to_git_branch():
+    project, source = _infer_project(
+        {"cwd": "", "git_branch": "feature/scope-fix", "project": "workspace"}
+    )
+
+    assert project == "feature/scope-fix"
+    assert source == "git_branch"
+
+
+def test_infer_project_falls_back_to_session_project():
+    project, source = _infer_project(
+        {"cwd": "", "git_branch": "main", "project": "auto-review"}
+    )
+
+    assert project == "auto-review"
+    assert source == "session.project"
 
 
 def test_fetch_session_rows_matches_start_or_end_day_not_broad_overlap(

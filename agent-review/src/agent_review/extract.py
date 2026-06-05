@@ -288,15 +288,23 @@ def _infer_project(row: dict) -> tuple[str, str]:
         parts = PurePosixPath(cwd).parts
         # ~/dev/projects/<name>/sub → <name>
         for i, p in enumerate(parts):
-            if p in _PROJECT_HINT_PARENTS and i + 1 < len(parts):
+            if (
+                p in _PROJECT_HINT_PARENTS
+                and i + 1 < len(parts)
+                and parts[i + 1] not in _PROJECT_HINT_PARENTS
+            ):
                 return parts[i + 1], "cwd"
         # last meaningful path segment, skipping $HOME-ish noise
-        meaningful = [p for p in parts if p not in {"/", "home", "mj", "Users"}]
+        meaningless = {"/", "home", "mj", "Users"} | _PROJECT_HINT_PARENTS
+        meaningful = [p for p in parts if p not in meaningless]
         if meaningful:
             return meaningful[-1], "cwd"
 
-    if branch and branch not in {"HEAD", "main", "master"}:
+    if branch and branch not in {"HEAD", "main", "master"} | _PROJECT_HINT_PARENTS:
         return branch, "git_branch"
+
+    if fallback in _PROJECT_HINT_PARENTS:
+        return "unknown", "session.project"
 
     return fallback, "session.project"
 
