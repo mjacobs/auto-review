@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import os
+import re
 import tempfile
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -47,11 +48,30 @@ def _anchor(t: Thought) -> str:
     return f"^mx-{t.id.replace('-', '')[:8]}"
 
 
+_NON_TAG = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_tag(raw: str) -> str:
+    """Kebab-case a tag so it's a valid single Obsidian `#tag`.
+
+    Mirrors serverless-memex enrichment.ts normalizeTag: lowercase, drop a
+    leading '#', map non-alphanumerics to '-', collapse/trim hyphens. Older
+    captures carry un-normalized tags (e.g. 'cash investment'), and a space
+    would otherwise terminate the tag and leak text into the line.
+    """
+    s = _NON_TAG.sub("-", raw.lower().lstrip("#"))
+    return re.sub(r"-+", "-", s).strip("-")
+
+
+def _tag_chips(t: Thought) -> str:
+    chips = (_normalize_tag(tag) for tag in t.tags)
+    return "".join(f" `#{c}`" for c in chips if c)
+
+
 def render_line(t: Thought, tz: ZoneInfo) -> str:
     """A single inbox task line for one capture."""
     when = t.created_at.astimezone(tz).strftime("%m-%d %H:%M")
-    chips = "".join(f" `#{tag}`" for tag in t.tags)
-    return f"- [ ] {when} — {_line_text(t)}{chips} {_anchor(t)}"
+    return f"- [ ] {when} — {_line_text(t)}{_tag_chips(t)} {_anchor(t)}"
 
 
 def _now_iso(settings: Settings, now: dt.datetime | None) -> str:

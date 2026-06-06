@@ -46,6 +46,24 @@ def test_render_line_shape(settings: Settings) -> None:
     assert line.endswith("^mx-00000005")
 
 
+def test_render_line_kebabs_multiword_and_dirty_tags(settings: Settings) -> None:
+    t = _t(9, summary="x", tags=("cash investment", "API/v2", "#existing", "Foo Bar!"))
+    line = inbox.render_line(t, settings.tz)
+    assert "`#cash-investment`" in line
+    assert "`#api-v2`" in line
+    assert "`#existing`" in line
+    assert "`#foo-bar`" in line
+    # no raw space-bearing tag leaked through
+    assert "#cash investment" not in line
+
+
+def test_render_line_drops_tags_that_normalize_to_empty(settings: Settings) -> None:
+    t = _t(10, summary="x", tags=("good-tag", "!!!", "   ", "another"))
+    line = inbox.render_line(t, settings.tz)
+    assert "`#good-tag`" in line and "`#another`" in line
+    assert "`##" not in line and "`# `" not in line
+
+
 def test_render_line_falls_back_to_preview(settings: Settings) -> None:
     t = _t(1, summary=None, preview="first line\nsecond line")
     assert "first line" in inbox.render_line(t, settings.tz)
