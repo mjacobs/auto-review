@@ -1,0 +1,9 @@
+[Unit]
+Description=memex-triage — deliver cf-memex captures into the vault inbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# %h = the user's home. The wrapper sources ~/.secrets and sets its own PATH.
+ExecStart=%h/.local/bin/run-memex-triage
