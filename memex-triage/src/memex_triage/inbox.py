@@ -160,7 +160,11 @@ def append_thoughts(
 
     lines = "\n".join(render_line(t, settings.tz) for t in new)
     body = (post.content or "").rstrip()
-    post.content = f"{body}\n{lines}\n"
+    # Blank line before the first task (after the header prose) so it renders as
+    # a list; consecutive task lines stay contiguous on later appends.
+    last_line = body.splitlines()[-1].strip() if body else ""
+    sep = "\n" if last_line.startswith("- [") else "\n\n"
+    post.content = f"{body}{sep}{lines}\n"
     post.metadata["last_seq"] = max(t.seq for t in new)
     post.metadata["last_synced_at"] = _now_iso(settings, now)
 

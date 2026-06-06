@@ -1,36 +1,44 @@
 # auto-review
 
-Three sibling Python tools that synthesize raw daily activity — git
-diffs over an Obsidian vault, agent CLI session traces, and ambient
-notes captures — into narrative recap sections written idempotently
-into the vault's daily check-in note.
+Four sibling Python tools that surface raw daily activity — git diffs over
+an Obsidian vault, agent CLI session traces, and ambient notes captures — for
+review in an Obsidian vault.
 
-Each tool reads one source, renders one section, and writes it into
-the same check-in file. Re-runs replace the section in place; hand-edits
-outside the marker survive.
+Three of them (`vault-review`, `agent-review`, `memex-review`) render a
+narrative recap *section* written idempotently into the vault's daily check-in
+note; re-runs replace the section in place and hand-edits outside the marker
+survive. The fourth, `memex-triage`, is different: it *delivers* captures
+exactly-once into a separate, rolling `inbox/memex.md` for you to triage and
+drain by hand.
 
-## The three siblings
+## The siblings
 
 | Tool                                    | Source                                                            | Output                                            |
 | :-------------------------------------- | :---------------------------------------------------------------- | :------------------------------------------------ |
-| [`vault-review`](./vault-review/)       | `git log` over the vault                                          | Deterministic delta recap (what notes changed)    |
-| [`agent-review`](./agent-review/)       | `agentsview` Postgres (Claude / Codex / Gemini CLI session logs)  | LLM-synthesized daily narrative report            |
-| [`memex-review`](./memex-review/)       | [`serverless-memex`](https://github.com/mjacobs/serverless-memex) `/thoughts` API | Deterministic capture-inbox section (triage surface) |
+| [`vault-review`](./vault-review/)       | `git log` over the vault                                          | Deterministic delta recap (check-in section)      |
+| [`agent-review`](./agent-review/)       | `agentsview` Postgres (Claude / Codex / Gemini CLI session logs)  | LLM-synthesized daily narrative report (check-in section) |
+| [`memex-review`](./memex-review/)       | [`serverless-memex`](https://github.com/mjacobs/serverless-memex) `/thoughts` API | Deterministic capture-inbox section (check-in, daily recap) |
+| [`memex-triage`](./memex-triage/)       | `serverless-memex` `/thoughts?since=<seq>` change feed            | Exactly-once delivery into `inbox/memex.md` (rolling, action-framed) |
 
-The result, in a single day's check-in note:
+The three daily tools land in a single day's check-in note:
 
 ```
 journal/checkins/2026-05-19.md
 ├── ## vault-review — 2026-05-19      ← what you wrote/edited in the vault
 ├── ## agent-review — 2026-05-19      ← what you did across Claude/Codex/etc.
-└── ## memex-review — 2026-05-19      ← what you captured (inbox for triage)
+└── ## memex-review — 2026-05-19      ← what you captured (daily recap, for context)
 ```
+
+`memex-triage` writes elsewhere — a standing `inbox/memex.md` task list that
+accumulates every capture until you triage it (vs. `memex-review`'s daily,
+context-only recap of the same source).
 
 ## Why a monorepo
 
-The three tools are independently installable and independently deployed.
-They live together because they share — by deliberate convention — the
-same shape:
+The tools are independently installable and independently deployed. They live
+together because the three daily siblings share — by deliberate convention —
+the same shape (`memex-triage` mirrors the layout and config style but
+intentionally diverges on CLI verbs and idempotency; see its `DESIGN.md`):
 
 - **Same CLI verbs.** `run today`, `run yesterday`, `run YYYY-MM-DD`,
   `run YYYY-MM-DD..YYYY-MM-DD`, `show`, `reset`, with global `--dry-run`
@@ -42,7 +50,7 @@ same shape:
   predictable HTML comment marker; the writer strips and replaces by
   regex. Human edits outside the marker are preserved.
 - **Same `pydantic-settings` config shape.** All config via env or
-  `.env`; `VAULT_PATH` and `TZ` are common across all three, plus
+  `.env`; `VAULT_PATH` and `TZ` are common across all four, plus
   per-source credentials.
 
 The monorepo is what makes the shape enforceable. Drifting one tool away

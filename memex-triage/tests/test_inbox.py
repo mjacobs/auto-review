@@ -92,6 +92,18 @@ def test_append_advances_watermark_and_appends_lines(settings: Settings) -> None
     assert inbox.count_task_lines(settings) == 3
 
 
+def test_blank_line_before_first_task_then_contiguous(settings: Settings) -> None:
+    inbox.init_inbox(0, settings=settings)
+    inbox.append_thoughts([_t(1)], settings=settings)
+    body = frontmatter.load(settings.inbox_file).content
+    # header prose is separated from the first task by a blank line
+    assert "property.\n\n- [ ] " in body
+    # a later append keeps task lines contiguous (no blank line between them)
+    inbox.append_thoughts([_t(2)], settings=settings)
+    body = frontmatter.load(settings.inbox_file).content
+    assert "^mx-00000001\n- [ ] " in body
+
+
 def test_append_is_idempotent_below_watermark(settings: Settings) -> None:
     inbox.init_inbox(0, settings=settings)
     inbox.append_thoughts([_t(1), _t(2)], settings=settings)

@@ -5,18 +5,24 @@ AI coding agents.
 
 ## Project context
 
-**auto-review** is a family of three sibling tools that synthesize
-domain-specific sources into the daily check-in note in an Obsidian vault
-(`<vault>/journal/checkins/YYYY-MM-DD.md`):
+**auto-review** is a family of four sibling tools that surface
+domain-specific sources for daily review. Three write a marker-bracketed
+section into the daily check-in note (`<vault>/journal/checkins/YYYY-MM-DD.md`);
+the fourth, `memex-triage`, is the odd one out — it delivers continuously into
+a separate, human-drained inbox note.
 
 | Tool | Source | Output |
 |---|---|---|
-| `agent-review` | `agentsview` Postgres | LLM-synthesized daily report |
-| `vault-review` | vault git history | deterministic delta recap |
-| `memex-review` | `serverless-memex` `/thoughts` API | deterministic capture inbox |
+| `agent-review` | `agentsview` Postgres | LLM-synthesized daily report (check-in section) |
+| `vault-review` | vault git history | deterministic delta recap (check-in section) |
+| `memex-review` | `serverless-memex` `/thoughts` API | deterministic capture inbox (check-in section) |
+| `memex-triage` | `serverless-memex` `/thoughts?since=<seq>` feed | exactly-once delivery into `inbox/memex.md` (rolling, action-framed) |
 
-All three share one CLI shape and one marker-bracketed idempotency story.
-See the top-level [`README.md`](./README.md) for the user-facing pitch.
+The first three share one CLI shape and one marker-bracketed idempotency
+story. `memex-triage` instead tracks a monotonic-seq watermark in its own
+note's frontmatter and runs continuously (desktop `*/5` timer) rather than as
+a daily batch — see its [`DESIGN.md`](./memex-triage/DESIGN.md). See the
+top-level [`README.md`](./README.md) for the user-facing pitch.
 
 ### Sibling shape
 
@@ -45,9 +51,11 @@ strip-and-replace; human edits outside the marker survive.
 
 ### Deployment pattern
 
-All three siblings are designed to run on a Linux host with cron, the
-vault checked out locally, and credentials in `~/.secrets`. Build wheel
-locally, ship to the cron host, install via `uv tool`:
+The three daily siblings run on a Linux host with cron, the vault checked out
+locally, and credentials in `~/.secrets`. (`memex-triage` is the exception —
+it runs on the **desktop** as a `systemd --user` `*/5` timer; see
+[`memex-triage/deploy/README.md`](./memex-triage/deploy/README.md).) Build
+wheel locally, ship to the cron host, install via `uv tool`:
 
 ```bash
 cd ~/dev/projects/auto-review/<tool>
@@ -81,13 +89,16 @@ the vault git lock. Wrappers can share a single log file (e.g.
   the vault has background auto-sync — files you write under the vault
   get committed and pushed by an external process. Don't `git add` /
   `git commit` the vault yourself; it'll happen.
-- **Cron wrappers** (`vault-review/deploy/run-recap-*`,
-  `memex-review/deploy/run-memex-review-*`, future doctor wrapper):
-  the wrapper is responsible for its own `git add / commit / push` of
-  the section it just wrote. This is intentional — it avoids races
-  between cron finishing and the background sync picking the file up,
-  and keeps the per-run audit trail (commit message names the tool +
+- **Cron / timer wrappers** (`vault-review/deploy/run-recap-*`,
+  `memex-review/deploy/run-memex-review-*`, `memex-triage/deploy/run-memex-triage.sh`,
+  future doctor wrapper): the wrapper is responsible for its own
+  `git add / commit / push` of the section it just wrote. This is intentional —
+  it avoids races between the run finishing and the background sync picking the
+  file up, and keeps the per-run audit trail (commit message names the tool +
   date) in vault history. Existing production wrappers already do this.
+  `memex-triage`'s wrapper additionally commits *only* its own
+  `inbox/memex.md` and uses `--autostash`, since it runs `*/5` on a desktop
+  you're actively editing in.
 
 ### Secrets policy
 
