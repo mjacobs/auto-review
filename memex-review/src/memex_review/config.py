@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,15 @@ class Settings(BaseSettings):
     @property
     def checkins_dir(self) -> Path:
         return self.vault_path / "journal" / "checkins"
+
+    def checkin_path(self, date: dt.date) -> Path:
+        """Path to a daily check-in note, nested by month.
+
+        Layout: journal/checkins/YYYY/MM/YYYY-MM-DD.md (auto-review-d4c). The
+        filename keeps the full date so markers/links/date-keys are unchanged —
+        only the directory nests.
+        """
+        return self.checkins_dir / f"{date:%Y}" / f"{date:%m}" / f"{date.isoformat()}.md"
 
 
 _settings: Settings | None = None

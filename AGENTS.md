@@ -7,7 +7,7 @@ AI coding agents.
 
 **auto-review** is a family of four sibling tools that surface
 domain-specific sources for daily review. Three write a marker-bracketed
-section into the daily check-in note (`<vault>/journal/checkins/YYYY-MM-DD.md`);
+section into the daily check-in note (`<vault>/journal/checkins/YYYY/MM/YYYY-MM-DD.md`);
 the fourth, `memex-triage`, is the odd one out — it delivers continuously into
 a separate, human-drained inbox note.
 

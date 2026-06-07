@@ -224,7 +224,9 @@ def _write_doctor_checkins(checkin_dir: Path, dates: list[dt.date]) -> None:
     checkin_dir.mkdir(parents=True, exist_ok=True)
     for d in dates:
         iso = d.isoformat()
-        (checkin_dir / f"{iso}.md").write_text(
+        path = doctor.checkin_path(checkin_dir, d)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
             f"# check-in — {iso}\n\n## auto-review doctor — {iso}\n\n"
             f"<!-- auto-review-doctor:daily={iso} generated_at={iso}T22:01:00Z -->\n",
             encoding="utf-8",

@@ -104,8 +104,8 @@ def write_daily_section(date: dt.date, section_md: str) -> Path:
     the path written.
     """
     s = get_settings()
-    s.checkins_dir.mkdir(parents=True, exist_ok=True)
-    note_path = s.checkins_dir / f"{date.isoformat()}.md"
+    note_path = s.checkin_path(date)
+    note_path.parent.mkdir(parents=True, exist_ok=True)
 
     post = frontmatter.load(note_path) if note_path.exists() else _default_daily_post(date)
 
@@ -124,7 +124,7 @@ def write_daily_section(date: dt.date, section_md: str) -> Path:
 def read_daily_section(date: dt.date) -> str | None:
     """Return the current vault-review daily section for `date`, or None."""
     s = get_settings()
-    note_path = s.checkins_dir / f"{date.isoformat()}.md"
+    note_path = s.checkin_path(date)
     if not note_path.exists():
         return None
     post = frontmatter.load(note_path)
@@ -138,7 +138,7 @@ def remove_daily_section(date: dt.date) -> bool:
     Returns True if a section was removed.
     """
     s = get_settings()
-    note_path = s.checkins_dir / f"{date.isoformat()}.md"
+    note_path = s.checkin_path(date)
     if not note_path.exists():
         return False
     post = frontmatter.load(note_path)

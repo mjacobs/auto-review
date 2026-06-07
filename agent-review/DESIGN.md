@@ -81,7 +81,7 @@ digest, not summarized independently.
              ▼
 ┌──────────────────────────┐
 │ Stage 4: Vault writer    │ ─► append/replace section in
-│                          │     ~/vault/journal/checkins/YYYY-MM-DD.md
+│                          │     ~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md
 └──────────────────────────┘
 ```
 
@@ -157,7 +157,7 @@ Model: **Claude Sonnet 4.6** for synthesis (better narrative judgment).
 
 ### Stage 4 — vault writer
 
-Target: `~/vault/journal/checkins/YYYY-MM-DD.md`. If the file doesn't exist,
+Target: `~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md`. If the file doesn't exist,
 create it from `~/vault/templates/daily.md` (with frontmatter
 `tags: [journal/checkin]`, `date:` filled in).
 

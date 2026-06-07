@@ -1,6 +1,6 @@
 """Stage 4: vault writer.
 
-Writes the rendered section to ~/vault/journal/checkins/YYYY-MM-DD.md.
+Writes the rendered section to ~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md.
 Idempotent: re-running for the same date replaces the existing section
 in-place using a comment marker, preserving any human edits to the file.
 """
@@ -45,8 +45,8 @@ def write_section(report_date: dt.date, section_md: str) -> Path:
     Creates the note (with default frontmatter) if it doesn't exist. Returns
     the path written."""
     s = get_settings()
-    s.checkins_dir.mkdir(parents=True, exist_ok=True)
-    note_path = s.checkins_dir / f"{report_date.isoformat()}.md"
+    note_path = s.checkin_path(report_date)
+    note_path.parent.mkdir(parents=True, exist_ok=True)
 
     if note_path.exists():
         post = frontmatter.load(note_path)
@@ -72,7 +72,7 @@ def write_section(report_date: dt.date, section_md: str) -> Path:
 def read_section(report_date: dt.date) -> str | None:
     """Return the current agent-review section for the date, or None."""
     s = get_settings()
-    note_path = s.checkins_dir / f"{report_date.isoformat()}.md"
+    note_path = s.checkin_path(report_date)
     if not note_path.exists():
         return None
     post = frontmatter.load(note_path)
@@ -84,7 +84,7 @@ def remove_section(report_date: dt.date) -> bool:
     """Remove the agent-review section from the day's note, if present.
     Returns True if a section was removed."""
     s = get_settings()
-    note_path = s.checkins_dir / f"{report_date.isoformat()}.md"
+    note_path = s.checkin_path(report_date)
     if not note_path.exists():
         return False
     post = frontmatter.load(note_path)

@@ -51,7 +51,7 @@ def _closing_marker(date: dt.date) -> str:
 
 
 def _checkin_path(date: dt.date) -> Path:
-    return get_settings().checkins_dir / f"{date.isoformat()}.md"
+    return get_settings().checkin_path(date)
 
 
 def write_daily_section(date: dt.date, section_md: str) -> Path:
@@ -60,9 +60,8 @@ def write_daily_section(date: dt.date, section_md: str) -> Path:
     Creates the note (with default frontmatter) if it doesn't exist. Returns
     the path written.
     """
-    s = get_settings()
-    s.checkins_dir.mkdir(parents=True, exist_ok=True)
     note_path = _checkin_path(date)
+    note_path.parent.mkdir(parents=True, exist_ok=True)
 
     post = frontmatter.load(note_path) if note_path.exists() else _default_daily_post(date)
 

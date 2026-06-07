@@ -84,7 +84,7 @@ class TestWriteDailySection:
     def test_frontmatter_preserved_on_existing_file(self, tmp_path):
         date = dt.date(2026, 5, 14)
         # Pre-create file with custom frontmatter
-        note_path = tmp_path / "journal" / "checkins" / "2026-05-14.md"
+        note_path = tmp_path / "journal" / "checkins" / "2026" / "05" / "2026-05-14.md"
         note_path.parent.mkdir(parents=True)
         note_path.write_text(
             "---\ncreated: 2026-05-14\ntags:\n- journal/checkin\ncustom_key: preserved\n---\n\n# check-in\n",
@@ -101,7 +101,7 @@ class TestReadDailySection:
 
     def test_returns_none_when_no_section(self, tmp_path):
         date = dt.date(2026, 5, 14)
-        note_path = tmp_path / "journal" / "checkins" / "2026-05-14.md"
+        note_path = tmp_path / "journal" / "checkins" / "2026" / "05" / "2026-05-14.md"
         note_path.parent.mkdir(parents=True)
         note_path.write_text("---\n---\n\n# check-in\n", encoding="utf-8")
         assert read_daily_section(date) is None
@@ -121,7 +121,7 @@ class TestRemoveDailySection:
 
     def test_returns_false_when_no_section(self, tmp_path):
         date = dt.date(2026, 5, 14)
-        note_path = tmp_path / "journal" / "checkins" / "2026-05-14.md"
+        note_path = tmp_path / "journal" / "checkins" / "2026" / "05" / "2026-05-14.md"
         note_path.parent.mkdir(parents=True)
         note_path.write_text("---\n---\n\n# check-in\n", encoding="utf-8")
         assert remove_daily_section(date) is False

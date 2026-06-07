@@ -134,15 +134,15 @@ def test_write_only_touches_target_date_section(isolated_vault: Path) -> None:
     write_daily_section(earlier, SECTION.replace("2026-05-14", "2026-05-13"))
     write_daily_section(DATE, SECTION)
     # Different notes:
-    earlier_path = isolated_vault / "journal" / "checkins" / "2026-05-13.md"
-    today_path = isolated_vault / "journal" / "checkins" / "2026-05-14.md"
+    earlier_path = isolated_vault / "journal" / "checkins" / "2026" / "05" / "2026-05-13.md"
+    today_path = isolated_vault / "journal" / "checkins" / "2026" / "05" / "2026-05-14.md"
     assert "## memex-review — 2026-05-13" in _read(earlier_path)
     assert "## memex-review — 2026-05-14" in _read(today_path)
 
 
 def test_write_only_touches_own_section_when_others_present(isolated_vault: Path) -> None:
     """A sibling tool's section (e.g. vault-review) must survive our write."""
-    path = isolated_vault / "journal" / "checkins" / "2026-05-14.md"
+    path = isolated_vault / "journal" / "checkins" / "2026" / "05" / "2026-05-14.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "---\ndate: 2026-05-14\n---\n\n"
