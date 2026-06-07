@@ -76,6 +76,12 @@ JOBS = [
         hhmm="10:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
         marker_tool="vault-review", marker_key="weekly", is_weekly=True),
     # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
+    # agent-review's upstream data feed: pushes session data into agentsview PG,
+    # which agent-review reads at 00:21. The baox push is timing-critical (the
+    # 23:55 push + the */30 boundary at 00:00 land the prior day's sessions
+    # before the post-midnight chain); the two claw feeds are low-activity.
+    Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
+    Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
     Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),
     Job("vault-agent capture", "openclaw", "harness-driven", "vault snapshots", False),
     Job("LiteLLM gateway", "portainer (.199)", "always-on (docker)", "LLM proxy endpoint", False),
