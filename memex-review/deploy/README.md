@@ -39,11 +39,12 @@ run-memex-review-daily 2>&1 | head -30
 Add to the cron host's user crontab (`crontab -e`):
 
 ```
-31 20 * * *  run-memex-review-daily  >> $HOME/.local/state/auto-review/cron.log 2>&1
+11 0 * * *  run-memex-review-daily  >> $HOME/.local/state/auto-review/cron.log 2>&1
 ```
 
-This fires at 20:31 daily — 30 minutes after `run-recap-daily` (vault-review)
-so the two don't race on the vault repo's git lock.
+This fires at 00:11 daily — 10 minutes after `run-recap-daily` (vault-review)
+so the two don't race on the vault repo's git lock. The chain runs just after
+midnight so each day's recap materializes right after the day closes.
 
 All three siblings (`agent-review`, `vault-review`, `memex-review`) write
 into the **day they review** (i.e., yesterday's check-in note), not the

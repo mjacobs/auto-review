@@ -77,12 +77,14 @@ Add to the cron-host user crontab only after the smoke test and first live
 write are accepted:
 
 ```cron
-1 21 * * *  run-agent-review-daily  >> $HOME/.local/state/auto-review/cron.log 2>&1
+21 0 * * *  run-agent-review-daily  >> $HOME/.local/state/auto-review/cron.log 2>&1
 ```
 
-This fires at 21:01 daily, 30 minutes after `run-memex-review-daily` and
-one hour after `run-recap-daily`, so the jobs do not race on the vault git
-lock. Project policy requires user confirmation before editing the cron
+This fires at 00:21 daily, 10 minutes after `run-memex-review-daily` and
+20 minutes after `run-recap-daily`, so the jobs do not race on the vault git
+lock (and 00:21 clears the `agentsview pg push` at 00:00). The chain runs
+just after midnight so each day's recap materializes right after the day
+closes. Project policy requires user confirmation before editing the cron
 host's crontab.
 
 ## upgrade

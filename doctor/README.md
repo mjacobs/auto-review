@@ -178,11 +178,11 @@ ssh <cron-host> 'chmod +x ~/.local/bin/auto-review-doctor ~/.local/bin/run-auto-
 ssh <cron-host> 'auto-review-doctor --print'
 
 # then add to crontab (CONFIRM WITH USER FIRST, per AGENTS.md):
-#   1 22 * * *  run-auto-review-doctor  >> ~/.local/state/auto-review/cron.log 2>&1
+#   31 0 * * *  run-auto-review-doctor  >> ~/.local/state/auto-review/cron.log 2>&1
 ```
 
-22:01 PT is ≥30 min after memex-review's 20:31 daily fire, so doctor sees
-both daily runs' results.
+00:31 PT runs last in the just-after-midnight chain (vault 00:01, memex 00:11,
+agent 00:21), so doctor sees all the daily runs' results.
 
 ## Promotion-to-v1 trigger
 

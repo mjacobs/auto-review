@@ -50,9 +50,9 @@ declare -A TOOL_WRAPPER=(
 # Cron lines use $HOME (escaped) so they resolve at the remote user's
 # home directory regardless of which user the cron host runs as.
 declare -A TOOL_CRON=(
-  [agent-review]="1 21 * * *  run-agent-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
-  [vault-review]="1 20 * * *  run-recap-daily          >> \$HOME/.local/state/auto-review/cron.log 2>&1"
-  [memex-review]="31 20 * * *  run-memex-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
+  [agent-review]="21 0 * * *  run-agent-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
+  [vault-review]="1 0 * * *  run-recap-daily          >> \$HOME/.local/state/auto-review/cron.log 2>&1"
+  [memex-review]="11 0 * * *  run-memex-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
 )
 
 # Grep patterns to check in ~/.secrets (space-separated list per tool).
