@@ -26,10 +26,11 @@ _loader.exec_module(doctor)
 
 
 def test_reported_week_label_is_last_week():
-    # Sunday 2026-05-31 is in ISO week 2026-W22; the weekly cron runs
-    # `last-week`, so the recap it writes covers 2026-W21.
-    assert doctor.iso_week_label(dt.date(2026, 5, 31)) == "2026-W22"
-    assert doctor.reported_week_label(dt.date(2026, 5, 31)) == "2026-W21"
+    # Monday 2026-05-25 is in ISO week 2026-W22; the weekly cron runs
+    # `last-week` on Monday, so the recap it writes covers the just-ended
+    # 2026-W21 (Mon–Sun).
+    assert doctor.iso_week_label(dt.date(2026, 5, 25)) == "2026-W22"
+    assert doctor.reported_week_label(dt.date(2026, 5, 25)) == "2026-W21"
 
 
 def test_weekly_note_path_uses_reported_label():
@@ -106,15 +107,16 @@ def test_section_info_daily_present_and_scoped_per_tool():
     assert m_present is True and m_lines == 1
 
 
-# ─── assess_jobs: full weekly path on a Sunday ────────────────────────────────
+# ─── assess_jobs: full weekly path on a Monday ────────────────────────────────
 
 
-def test_assess_jobs_weekly_present_on_sunday():
-    sunday = dt.date(2026, 5, 31)
-    log = ["[main deadbee] vault-review: weekly recap 2026-05-31T17:01:01Z\n"]
-    reports = doctor.assess_jobs(log, sunday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[])
+def test_assess_jobs_weekly_present_on_monday():
+    # Monday 2026-05-25 → last-week = 2026-W21, the label WEEKLY_NOTE carries.
+    monday = dt.date(2026, 5, 25)
+    log = ["[main deadbee] vault-review: weekly recap 2026-05-25T17:01:01Z\n"]
+    reports = doctor.assess_jobs(log, monday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[])
     weekly = next(r for r in reports if r.name == "vault-review weekly")
-    assert weekly.skipped_reason is None  # Sunday → not skipped
+    assert weekly.skipped_reason is None  # Monday → not skipped
     assert weekly.fired is True
     assert weekly.section_present is True
     assert weekly.section_lines >= 3
@@ -124,7 +126,7 @@ def test_assess_jobs_weekly_skipped_midweek():
     thursday = dt.date(2026, 5, 28)
     reports = doctor.assess_jobs([], thursday, yesterday_checkin_text="", weekly_text="", tracebacks=[])
     weekly = next(r for r in reports if r.name == "vault-review weekly")
-    assert weekly.skipped_reason == "weekly — Sundays only"
+    assert weekly.skipped_reason == "weekly — Mondays only"
 
 
 def test_find_tracebacks_empty():
@@ -200,13 +202,13 @@ def test_assess_jobs_agent_review_daily_present():
     assert agent.section_lines == 2
 
 
-def test_assess_jobs_weekly_present_on_sunday_with_reported_label():
-    # Tests that when we run on a Sunday, the weekly section is looked up with
+def test_assess_jobs_weekly_present_on_monday_with_reported_label():
+    # Tests that when we run on a Monday, the weekly section is looked up with
     # the correct reported_week_label and weekly marker-key, and is found.
-    sunday = dt.date(2026, 5, 31)
-    log = ["[main deadbee] vault-review: weekly recap 2026-05-31T17:01:01Z\n"]
+    monday = dt.date(2026, 5, 25)
+    log = ["[main deadbee] vault-review: weekly recap 2026-05-25T17:01:01Z\n"]
     reports = doctor.assess_jobs(
-        log, sunday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[]
+        log, monday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[]
     )
     weekly = next(r for r in reports if r.name == "vault-review weekly")
     assert weekly.skipped_reason is None

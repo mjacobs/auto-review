@@ -129,7 +129,7 @@ log lines are scanned (default 1000).
 
 - **Per-job liveness**: for each expected cron (vault-review daily,
   memex-review daily, agent-review daily, auto-review-doctor daily, and
-  vault-review weekly on Sundays), did its most-recent success-commit
+  vault-review weekly on Mondays), did its most-recent success-commit
   line in the log carry a UTC timestamp that maps to today in PT?
 - **Output sanity**: for each expected sibling section in yesterday's
   check-in note, is the marker present + how many non-empty lines does it
@@ -155,7 +155,7 @@ _reporting on yesterday's check-in: `journal/checkins/2026-05-30.md`_
 | memex-review daily | ✓ 20:31 PT | ✓ 7 lines (0 captures) |
 | agent-review daily | ✓ 21:01 PT | ✓ 28 lines |
 | auto-review-doctor daily | ✓ 22:01 PT | ✓ 6 lines |
-| vault-review weekly | — | _weekly — Sundays only_ |
+| vault-review weekly | — | _weekly — Mondays only_ |
 
 <!-- auto-review-doctor:daily=2026-05-31 generated_at=2026-05-31T... -->
 ```

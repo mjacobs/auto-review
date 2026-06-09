@@ -14,6 +14,25 @@ from .gitdelta import Event
 
 _FRONTMATTER_DESC_RE = re.compile(r"^description:\s*(.+?)\s*$")
 _HEADING_RE = re.compile(r"^#+\s+(.*)$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_EMPHASIS_RE = re.compile(r"[*_`]+")
+
+_SUMMARY_MAX = 120
+
+
+def _sanitize_summary(text: str) -> str:
+    """Flatten a body line into safe inline bullet text.
+
+    The summary is dropped onto a single `- ... — <summary>` line, so any raw
+    markdown it carries (emphasis runs, backticks, code-fence markers) leaks
+    into the surrounding bullet and corrupts rendering. Strip those markers,
+    collapse whitespace, and truncate so the line stays a one-liner.
+    """
+    text = _EMPHASIS_RE.sub("", text)
+    text = " ".join(text.split())
+    if len(text) > _SUMMARY_MAX:
+        text = text[: _SUMMARY_MAX - 1].rstrip() + "…"
+    return text
 
 
 def summarize_file(vault_path: Path, rel: str) -> str:
@@ -40,17 +59,26 @@ def summarize_file(vault_path: Path, rel: str) -> str:
             if m:
                 v = m.group(1).strip().strip('"').strip("'")
                 if v:
-                    return v
+                    return _sanitize_summary(v)
         else:
             body_start = len(lines)
     heading = ""
+    in_fence = False
     for ln in lines[body_start:]:
+        if _FENCE_RE.match(ln):
+            # Toggle code-fence state and skip the delimiter; a fence opener
+            # like ```` ```tasks ```` is not a meaningful summary paragraph.
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         hm = _HEADING_RE.match(ln)
         if hm:
-            heading = hm.group(1).strip()
+            heading = _sanitize_summary(hm.group(1))
             continue
         if ln.strip():
-            return f"{heading} — {ln.strip()}" if heading else ln.strip()
+            body = _sanitize_summary(ln)
+            return f"{heading} — {body}" if heading else body
     return heading or "(empty)"
 
 

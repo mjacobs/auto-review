@@ -72,7 +72,7 @@ JOBS = [
     Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:31 PT daily", "check-in § (health)", True,
         hhmm="00:31", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
-    Job("vault-review weekly", "auto-review LXC (.223)", "Sun 10:01 PT", "weekly § (weekly recap)", True,
+    Job("vault-review weekly", "auto-review LXC (.223)", "Mon 10:01 PT", "weekly § (weekly recap)", True,
         hhmm="10:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
         marker_tool="vault-review", marker_key="weekly", is_weekly=True),
     # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
@@ -101,7 +101,7 @@ class JobReport:
     section_present: bool | None  # None = N/A (not expected today)
     section_lines: int | None
     section_note: str             # "0 captures", "" etc.
-    skipped_reason: str | None    # e.g. "weekly — Sundays only"
+    skipped_reason: str | None    # e.g. "weekly — Mondays only"
     tracebacks: list[str] = field(default_factory=list)
 
 
@@ -249,7 +249,7 @@ def assess_jobs(
     weekly_text: str,
     tracebacks: list[dict[str, str]],
 ) -> list[JobReport]:
-    is_sunday = today_pt.weekday() == 6
+    is_monday = today_pt.weekday() == 0
     reports: list[JobReport] = []
     for job in JOBS:
         if not job.monitored:
@@ -257,11 +257,11 @@ def assess_jobs(
         name, hhmm, regex, sibling_tool, is_weekly, marker_key = (
             job.name, job.hhmm, job.commit_regex, job.marker_tool, job.is_weekly, job.marker_key,
         )
-        if is_weekly and not is_sunday:
+        if is_weekly and not is_monday:
             reports.append(JobReport(
                 name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
                 section_present=None, section_lines=None, section_note="",
-                skipped_reason="weekly — Sundays only",
+                skipped_reason="weekly — Mondays only",
                 tracebacks=[],
             ))
             continue
@@ -301,9 +301,9 @@ def assess_jobs(
         fired_today = ts_pt.date() == today_pt
         fired_at = ts_pt.strftime("%H:%M") if fired_today else f"({ts_pt.date().isoformat()})"
         if is_weekly:
-            # The weekly cron runs `run-weekly last-week`, writing a section for the
-            # ISO week *before* the Sunday it fires, into journal/weekly/YYYY-W##.md
-            # keyed `:weekly=YYYY-W##`.
+            # The weekly cron runs `run-weekly last-week` on Monday, writing a
+            # section for the ISO week that just ended (Mon–Sun), into
+            # journal/weekly/YYYY-W##.md keyed `:weekly=YYYY-W##`.
             present, lines, note = section_info(
                 weekly_text, sibling_tool, marker_key, reported_week_label(today_pt)
             )
@@ -455,8 +455,9 @@ def iso_week_label(date: dt.date) -> str:
 
 
 def reported_week_label(today: dt.date) -> str:
-    """ISO-week label the Sunday weekly recap covers: `last-week` relative to the
-    run day, matching `vault-review run-weekly last-week`."""
+    """ISO-week label the Monday weekly recap covers: `last-week` relative to the
+    run day, matching `vault-review run-weekly last-week`. On Monday this is the
+    Mon–Sun week that just ended."""
     return iso_week_label(today - dt.timedelta(weeks=1))
 
 
