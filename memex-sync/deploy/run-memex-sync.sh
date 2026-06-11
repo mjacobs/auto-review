@@ -15,8 +15,11 @@
 # uv-tool-installed `memex-sync` binary (commonly ~/.local/bin).
 #
 # Required env (sourced from ~/.secrets if present):
-#   PG_DSN               postgresql://memex_sync@<pg-host>:5432/<db>
-#                        (password may instead come from ~/.pgpass)
+#   MEMEX_SYNC_PG_DSN    postgresql://memex_sync@<pg-host>:5432/<db>
+#                        (password may instead come from ~/.pgpass).
+#                        Dedicated var because ~/.secrets PG_DSN on the cron
+#                        host belongs to the agent_review role, which has no
+#                        memex grants; falls back to PG_DSN if unset.
 #   MEMEX_URL, MEMEX_CLIENT_ID, MEMEX_CLIENT_SECRET
 #
 # Optional:
@@ -31,7 +34,10 @@ export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 # Load PG + CF Access creds. Cron starts with a minimal environment.
 [[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
 
-: "${PG_DSN:?PG_DSN must be set (provision ~/.secrets on this host)}"
+# Prefer the role-scoped DSN; the shared PG_DSN is another sibling's role.
+export PG_DSN="${MEMEX_SYNC_PG_DSN:-${PG_DSN:-}}"
+
+: "${PG_DSN:?MEMEX_SYNC_PG_DSN (or PG_DSN) must be set (provision ~/.secrets on this host)}"
 : "${MEMEX_URL:?MEMEX_URL must be set}"
 : "${MEMEX_CLIENT_ID:?MEMEX_CLIENT_ID must be set}"
 : "${MEMEX_CLIENT_SECRET:?MEMEX_CLIENT_SECRET must be set}"

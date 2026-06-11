@@ -83,6 +83,10 @@ JOBS = [
     Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
     Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
     Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),
+    # memex-sync records every run in ops.job_runs; flip to a monitored job_runs
+    # liveness check when the doctor learns to query PG (auto-review-hg6.8).
+    Job("memex-sync hourly", "auto-review LXC (.223)", ":41 hourly", "memex PG schema (captures/triage-seed/watermark)", False),
+    Job("memex-triage", "baox (workstation)", "*/5 systemd --user timer", "inbox/memex.md (exactly-once capture delivery)", False),
     Job("vault-agent capture", "openclaw", "harness-driven", "vault snapshots", False),
     Job("LiteLLM gateway", "portainer (.199)", "always-on (docker)", "LLM proxy endpoint", False),
     Job("logrotate", "auto-review LXC (.223)", "23:00 PT daily", "rotates cron.log", False),
