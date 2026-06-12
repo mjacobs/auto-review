@@ -92,7 +92,8 @@ check "memex_triage can UPDATE projects.projects" \
 ### ── grants: job_runs is append-only ─────────────────────────────────────────
 # Every job role can INSERT; nobody (job roles included) can UPDATE or DELETE.
 
-for role in memex_sync memex_review vault_review_job agent_review auto_review_doctor; do
+# checkin_renderer joined in 0006 (records its own runs; DESIGN.md decision 5).
+for role in memex_sync memex_review vault_review_job agent_review auto_review_doctor checkin_renderer; do
     check "$role can INSERT ops.job_runs" \
         "SELECT has_table_privilege('$role', 'ops.job_runs', 'INSERT')"
     check "$role canNOT UPDATE/DELETE ops.job_runs (append-only)" \
@@ -127,9 +128,11 @@ for role in auto_review_doctor checkin_renderer; do
     done
 done
 
+# ops.job_runs is excluded: 0006 grants the renderer INSERT there (append-only,
+# covered by the loop above) — it writes nothing else.
 for table in memex.captures memex.capture_triage memex.sync_state \
              vault_review.daily_digests vault_review.weekly_digests \
-             projects.projects ops.jobs ops.job_runs
+             projects.projects ops.jobs
 do
     check "checkin_renderer canNOT write $table" \
         "SELECT NOT (has_table_privilege('checkin_renderer', '$table', 'INSERT')
