@@ -11,8 +11,21 @@
 # memex-sync so late captures are in the mirror; see deploy/README.md).
 # PATH must include the directory holding the uv-tool-installed
 # `checkin-renderer` binary (commonly ~/.local/bin).
+#
+# Required env (sourced from ~/.secrets if present):
+#   CHECKIN_RENDERER_PG_DSN  postgresql://checkin_renderer@<pg-host>:5432/<db>
+#                            (password may instead come from ~/.pgpass).
+#                            Dedicated var because ~/.secrets PG_DSN on the
+#                            cron host belongs to the agent_review role.
 
 set -euo pipefail
+
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+# Load the PG DSN. Cron starts with a minimal environment.
+[[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
+
+: "${CHECKIN_RENDERER_PG_DSN:?CHECKIN_RENDERER_PG_DSN must be set (provision ~/.secrets on this host)}"
 
 VAULT="${VAULT_PATH:-$HOME/vault}"
 
