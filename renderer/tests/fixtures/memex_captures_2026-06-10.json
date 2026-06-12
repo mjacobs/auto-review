@@ -1,0 +1,22 @@
+[
+  {
+    "id": "mx-synth-0000000000000001",
+    "content": "Try ruff instead of flake8 for the demo pipeline \u2014 much faster on big trees.",
+    "summary": "ruff is a faster lint choice for the demo pipeline",
+    "tags": [
+      "tooling",
+      "python"
+    ],
+    "created_at": "2026-06-10T09:15:00-07:00"
+  },
+  {
+    "id": "mx-synth-0000000000000002",
+    "content": "Idea: the widget exporter could emit JSON Lines so downstream tools can stream it.",
+    "summary": "widget exporter should emit JSON Lines for streaming",
+    "tags": [
+      "idea",
+      "widgets"
+    ],
+    "created_at": "2026-06-10T14:42:00-07:00"
+  }
+]

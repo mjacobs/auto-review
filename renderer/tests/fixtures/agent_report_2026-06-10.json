@@ -1,0 +1,25 @@
+{
+  "report_date": "2026-06-10",
+  "generated_at": "2026-06-11T07:23:20.753747+00:00",
+  "stats": {
+    "date": "2026-06-10",
+    "agents": {
+      "claude": 2,
+      "codex": 1
+    },
+    "messages": 42,
+    "projects": {
+      "alpha": 2,
+      "beta": 1
+    },
+    "sessions": 3,
+    "blocker_count": 1,
+    "artifact_count": 2,
+    "est_synth_cost_usd": 0.01,
+    "est_total_cost_usd": 0.01,
+    "est_digest_cost_usd": 0.0,
+    "peak_context_tokens_max": 56789,
+    "session_output_tokens": 1234
+  },
+  "narrative_md": "## agent-review \u2014 2026-06-11 00:23\n\n_window: 2026-06-10 00:00 \u2192 00:23 America/Los_Angeles \u00b7 3 sessions \u00b7 2 projects \u00b7 ~$0.01 \u00b7 claude\u00d72, codex\u00d71_\n\n### narrative\n\nA quiet synthetic day. Most of the work landed in `alpha`, where the widget\nexporter grew a JSON Lines mode and a small CLI flag to select it. The `beta`\ndocs got a pass for the new exporter behavior.\n\n### by project\n\n- **alpha** \u2014 Added JSON Lines output to the widget exporter; flag + tests. [s](agentsview://session/00000000-0000-0000-0000-000000000001)\n- **beta** \u2014 Documented the exporter change in the user guide. [s](agentsview://session/00000000-0000-0000-0000-000000000002)\n\n### artifacts\n\n- commit: `0000001` \u2014 feat(exporter): JSON Lines output mode (`alpha`)\n- commit: `0000002` \u2014 docs: exporter JSONL mode (`beta`)\n\n### stuck / open\n\n- Exporter streaming mode still buffers the whole file; needs a follow-up.\n\n### stats\n\n| sessions | agents | msgs | session out tok | peak ctx | artifacts | blockers | est. cost |\n|---------:|:-------|-----:|---------------:|--------:|---------:|--------:|---------:|\n| 3 | claude\u00d72, codex\u00d71 | 42 | 1234 | 56789 | 2 | 1 | $0.0100 |\n\n<!-- agent-review:report_date=2026-06-10 generated_at=2026-06-11T00:23:20-07:00 -->\n"
+}
