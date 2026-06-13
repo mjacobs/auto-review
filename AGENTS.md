@@ -167,6 +167,17 @@ infra that runs on a schedule (even unmonitored: add it with
 that drift directly caused failures to go unnoticed; treat updating it as
 part of the change, not a follow-up.
 
+A monitored job's liveness is checked one of two ways (auto-review-hg6.8):
+the **marker path** (a `cron.log` commit line + a check-in marker —
+`commit_regex`/`marker_*`, for vault-review and the doctor itself) or the
+**PG path** (a fresh `ops.job_runs` row — `pg_job_name`/`pg_interval_hours`,
+for the PG writers memex-sync, agent-review, the renderer). A PG-monitored
+job needs BOTH a `JOBS` entry *and* an `ops.jobs` row (the `job_runs.job_name`
+FK), seeded via a `db/migrations/` file — `ops.jobs` is a thin parallel record
+of the same registry. The doctor reads `ops.job_runs` via a `psql` subprocess
+and degrades to the log/marker path (showing PG jobs as "unknown") when
+`AUTO_REVIEW_DOCTOR_PG_DSN`/psql is absent, so it still runs on a PG-less box.
+
 ### Working in this project
 
 - Tests live alongside modules; don't file separate "write tests" issues

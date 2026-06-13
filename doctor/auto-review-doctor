@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +30,22 @@ UTC = ZoneInfo("UTC")
 DEFAULT_LOG = Path.home() / ".local/state/auto-review/cron.log"
 DEFAULT_VAULT = Path.home() / "vault"
 TAIL_LINES = 1000
+
+# ── PG liveness (auto-review-hg6.8) ──
+# The doctor reads ops.job_runs for the PG-writer jobs (memex-sync, agent-review,
+# the renderer) instead of cron.log+markers, which those jobs no longer emit. PG
+# access is OPTIONAL: a stdlib `psql -At` subprocess (the doctor stays dependency-
+# free — no psycopg), degrading to the log/marker path when there's no DSN or psql.
+PG_DSN_ENV = "AUTO_REVIEW_DOCTOR_PG_DSN"
+PSQL_TIMEOUT_S = 10
+# One latest row per job_name. finished_at is rendered as the same UTC "…Z" ISO
+# string parse_utc_iso() already understands; cost_usd as plain text ('' if NULL).
+SQL_LATEST_RUNS = (
+    "SELECT DISTINCT ON (job_name) job_name, "
+    "to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+    "status, coalesce(cost_usd::text, '') "
+    "FROM ops.job_runs ORDER BY job_name, finished_at DESC"
+)
 # How many prior days the doctor scans for its OWN section, to detect missed
 # runs (the motivating failure: consecutive silent misses nobody noticed).
 SELF_LIVENESS_WINDOW = 7
@@ -48,11 +67,18 @@ class Job:
     writes: str           # what it produces
     monitored: bool       # does the doctor check this job's liveness?
     # ── liveness config — only meaningful when monitored ──
-    hhmm: str = ""                              # expected fire time PT
+    # A monitored job is checked one of two ways: the legacy MARKER path (a
+    # cron.log commit line + a check-in marker — vault-review, doctor self) or
+    # the PG path (a fresh ops.job_runs row — the PG writers, auto-review-hg6.8).
+    hhmm: str = ""                              # expected fire time PT (marker path)
     commit_regex: re.Pattern[str] | None = None
     marker_tool: str = ""
     marker_key: str = ""
     is_weekly: bool = False
+    # PG path: when pg_job_name is set, liveness is "is the latest ops.job_runs
+    # row younger than pg_interval_hours?" instead of log+marker.
+    pg_job_name: str = ""
+    pg_interval_hours: float = 0.0
 
 
 # The canonical registry. Monitored crons first, then catalogued-but-unmonitored
@@ -66,14 +92,29 @@ JOBS = [
     # memex-review DISSOLVED 2026-06-13 (hg6.4): the renderer emits the memex
     # section from memex.captures; the tool, its 00:11 cron, and its marker are
     # gone. agent-review went --no-vault the same day (hg6.6): it writes only a
-    # PG row, so it has no commit line or marker to monitor here — both it and
-    # the renderer become job_runs-liveness jobs in hg6.8 (catalogued below).
+    # PG row, so it has no commit line or marker to monitor here — it and the
+    # renderer are now PG-monitored (job_runs liveness, below).
     Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:31 PT daily", "check-in § (health)", True,
         hhmm="00:31", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
     Job("vault-review weekly", "auto-review LXC (.223)", "Mon 10:01 PT", "weekly § (weekly recap)", True,
         hhmm="10:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
         marker_tool="vault-review", marker_key="weekly", is_weekly=True),
+    # ── PG-monitored: liveness = a fresh ops.job_runs row, not log+marker ──────
+    # The PG-row writers (ADR 002). Each appends an ops.job_runs row per run, so
+    # the doctor checks "latest row younger than pg_interval_hours?" (hg6.8). The
+    # doctor runs 00:31 PT and reads a DAY-OLD signal: it fires before the
+    # renderer (00:51) and only ~10 min after agent-review (00:21, possibly still
+    # running), so a daily job's freshest row is normally ~24h old at doctor time
+    # — 26h flags a job dead a full day without false-flagging a late/in-flight
+    # nightly run. memex-sync is hourly (2h window). A crashed run writes no row
+    # and goes overdue; an 'error' row surfaces a handled failure.
+    Job("memex-sync hourly", "auto-review LXC (.223)", ":41 hourly", "memex PG schema (captures/triage-seed/watermark)", True,
+        pg_job_name="memex-sync", pg_interval_hours=2),
+    Job("agent-review daily", "auto-review LXC (.223)", "00:21 PT daily", "agent_review PG schema (daily report row; --no-vault)", True,
+        pg_job_name="agent-review", pg_interval_hours=26),
+    Job("check-in renderer daily", "auto-review LXC (.223)", "00:51 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
+        pg_job_name="checkin-renderer-daily", pg_interval_hours=26),
     # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
     # agent-review's upstream data feed: pushes session data into agentsview PG,
     # which agent-review reads at 00:21. The baox push is timing-critical (the
@@ -82,13 +123,6 @@ JOBS = [
     Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
     Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
     Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),
-    # The PG-row writers (ADR 002). Each records every run in ops.job_runs but
-    # is NOT liveness-monitored yet — the doctor still reads cron.log + markers,
-    # and these emit neither. Flip all three to monitored job_runs liveness
-    # checks when the doctor learns to query PG (auto-review-hg6.8).
-    Job("memex-sync hourly", "auto-review LXC (.223)", ":41 hourly", "memex PG schema (captures/triage-seed/watermark)", False),
-    Job("agent-review daily", "auto-review LXC (.223)", "00:21 PT daily", "agent_review PG schema (daily report row; --no-vault)", False),
-    Job("check-in renderer daily", "auto-review LXC (.223)", "00:51 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", False),
     Job("memex-triage", "baox (workstation)", "*/5 systemd --user timer", "inbox/memex.md (exactly-once capture delivery)", False),
     Job("vault-agent capture", "openclaw", "harness-driven", "vault snapshots", False),
     Job("LiteLLM gateway", "portainer (.199)", "always-on (docker)", "LLM proxy endpoint", False),
@@ -103,13 +137,18 @@ DOCTOR_MARKER_CLOSE = re.compile(r"^<!-- auto-review-doctor:daily=\d{4}-\d{2}-\d
 class JobReport:
     name: str
     expected_hhmm: str
-    fired: bool
+    fired: bool                   # marker path: commit seen today; PG path: row is fresh
     fired_at_pt: str | None      # "20:01" if today, "(2026-05-15)" if older
-    section_present: bool | None  # None = N/A (not expected today)
+    section_present: bool | None  # None = N/A (not expected today / PG job)
     section_lines: int | None
     section_note: str             # "0 captures", "" etc.
     skipped_reason: str | None    # e.g. "weekly — Mondays only"
     tracebacks: list[str] = field(default_factory=list)
+    # ── PG path (auto-review-hg6.8) ──
+    pg: bool = False              # liveness came from ops.job_runs, not log+marker
+    pg_status: str | None = None  # 'ok'|'error' from the row, 'degraded' (no PG), None (no row)
+    pg_cost: str | None = None    # formatted "$0.0400", or None
+    pg_overdue: bool = False      # a row exists but is older than the window
 
 
 def tail_lines(path: Path, n: int) -> list[str]:
@@ -125,6 +164,90 @@ def tail_lines(path: Path, n: int) -> list[str]:
 def parse_utc_iso(s: str) -> dt.datetime:
     # "2026-05-18T03:01:01Z"
     return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class RunRow:
+    """One latest ops.job_runs row, for a PG-monitored job's liveness."""
+    job_name: str
+    finished_at: dt.datetime     # UTC
+    status: str                  # 'ok' | 'error'
+    cost_usd: float | None
+
+
+def _rows_to_runmap(rows: list[list[str]]) -> dict[str, RunRow]:
+    """Parse psql `-At -F\\t` rows into {job_name: RunRow}. Malformed rows are
+    skipped rather than fatal — a parse hiccup must not blind the whole report."""
+    out: dict[str, RunRow] = {}
+    for r in rows:
+        if len(r) < 4:
+            continue
+        job_name, finished, status, cost = r[0], r[1], r[2], r[3]
+        try:
+            ts = parse_utc_iso(finished)
+        except ValueError:
+            continue
+        cost_usd: float | None = None
+        if cost not in ("", None):
+            try:
+                cost_usd = float(cost)
+            except ValueError:
+                cost_usd = None
+        out[job_name] = RunRow(job_name=job_name, finished_at=ts, status=status, cost_usd=cost_usd)
+    return out
+
+
+def query_latest_runs(dsn: str | None) -> dict[str, RunRow] | None:
+    """Latest ops.job_runs row per job_name via a `psql -At` subprocess.
+
+    Returns None — signalling "degrade to the log/marker path" — when there's no
+    DSN, psql isn't on PATH, or the query fails/times out, so the doctor still
+    runs on a box without PG. Keeping this a subprocess (not psycopg) is what lets
+    the doctor stay a single stdlib-only file.
+    """
+    if not dsn or not shutil.which("psql"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["psql", dsn, "-At", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", SQL_LATEST_RUNS],
+            capture_output=True, text=True, timeout=PSQL_TIMEOUT_S,
+            env={**os.environ, "PGCONNECT_TIMEOUT": "8"},
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    rows = [line.split("\t") for line in proc.stdout.splitlines() if line.strip()]
+    return _rows_to_runmap(rows)
+
+
+def assess_pg_job(
+    job: Job, today_pt: dt.date, pg_runs: dict[str, RunRow] | None, now_utc: dt.datetime
+) -> JobReport:
+    """Build a JobReport for a PG-monitored job from the latest-runs map.
+
+    pg_runs is None when PG is unreachable (degraded: liveness unknown); a job
+    absent from the map has never recorded a run; otherwise liveness is whether
+    the latest row is younger than the job's window.
+    """
+    base = dict(
+        name=job.name, expected_hhmm=job.cadence, section_present=None,
+        section_lines=None, section_note="", skipped_reason=None, pg=True,
+    )
+    if pg_runs is None:
+        return JobReport(fired=False, fired_at_pt=None, pg_status="degraded", **base)
+    row = pg_runs.get(job.pg_job_name)
+    if row is None:
+        return JobReport(fired=False, fired_at_pt=None, pg_status=None, **base)
+    age_h = (now_utc - row.finished_at).total_seconds() / 3600.0
+    fresh = age_h <= job.pg_interval_hours
+    ts_pt = row.finished_at.astimezone(PT)
+    fired_at = ts_pt.strftime("%H:%M") if ts_pt.date() == today_pt else f"({ts_pt.date().isoformat()})"
+    cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else None
+    return JobReport(
+        fired=fresh, fired_at_pt=fired_at, pg_status=row.status,
+        pg_cost=cost, pg_overdue=not fresh, **base,
+    )
 
 
 def latest_match(lines: list[str], pattern: re.Pattern[str]) -> tuple[str, dt.datetime] | None:
@@ -255,12 +378,20 @@ def assess_jobs(
     yesterday_checkin_text: str,
     weekly_text: str,
     tracebacks: list[dict[str, str]],
+    pg_runs: dict[str, RunRow] | None = None,
+    now_utc: dt.datetime | None = None,
 ) -> list[JobReport]:
     is_monday = today_pt.weekday() == 0
+    now_utc = now_utc or dt.datetime.now(UTC)
     reports: list[JobReport] = []
     for job in JOBS:
         if not job.monitored:
             continue  # catalogued infra; liveness not checked (see moving-pieces doc)
+        if job.pg_job_name:
+            # PG-monitored: liveness is a fresh ops.job_runs row (hg6.8), not
+            # log+marker. pg_runs is None when PG is unreachable (degraded).
+            reports.append(assess_pg_job(job, today_pt, pg_runs, now_utc))
+            continue
         name, hhmm, regex, sibling_tool, is_weekly, marker_key = (
             job.name, job.hhmm, job.commit_regex, job.marker_tool, job.is_weekly, job.marker_key,
         )
@@ -346,6 +477,29 @@ def format_self_liveness(today_pt: dt.date, last_present: dt.date | None, gaps: 
     return f"_doctor self-liveness: last section {last_present.isoformat()} ({ago}) — no gaps_"
 
 
+def _pg_run_cell(r: JobReport) -> str:
+    """The 'last run' cell for a PG-monitored job."""
+    if r.pg_status == "degraded":
+        return "⚠️ unknown (no PG)"
+    if r.fired_at_pt is None:          # no row ever recorded
+        return "❌ never"
+    when = f"{r.fired_at_pt} PT" if ":" in r.fired_at_pt else r.fired_at_pt
+    if r.fired:                        # fresh: latest row within the window
+        return f"✓ {when}"
+    return f"❌ overdue (last {when})"  # a row exists but it's stale
+
+
+def _pg_result_cell(r: JobReport) -> str:
+    """The 'latest result' cell for a PG-monitored job: status + cost."""
+    if r.pg_status in ("degraded", None):
+        return "—"
+    icon = "✓" if r.pg_status == "ok" else "⚠️"
+    cell = f"{icon} {r.pg_status}"
+    if r.pg_cost:
+        cell += f" · {r.pg_cost}"
+    return cell
+
+
 def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int, self_liveness: tuple[dt.date | None, list[dt.date]]) -> str:
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     expected = [r for r in reports if r.skipped_reason is None]
@@ -354,13 +508,27 @@ def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list
     
     tb_count = len(tracebacks)
     reject_cell = f"{push_rejections} push rejections" if push_rejections == 0 else f"⚠️ {push_rejections} push rejections"
-    summary = f"_{len(fired)}/{len(expected)} jobs fired today · {tb_count} tracebacks · {reject_cell} in log tail_"
+    summary = f"_{len(fired)}/{len(expected)} jobs healthy · {tb_count} tracebacks · {reject_cell} in log tail_"
 
-    rows = ["| job | fired today | section in yesterday's check-in |",
+    # Degraded PG liveness: the DSN is missing or PG was unreachable, so the
+    # PG-monitored jobs (memex-sync, agent-review, renderer) can't be checked.
+    degraded = [r for r in reports if r.pg and r.pg_status == "degraded"]
+    degraded_line = ""
+    if degraded:
+        names = ", ".join(r.name for r in degraded)
+        degraded_line = (
+            f"_⚠️ PG liveness unavailable (no {PG_DSN_ENV} or psql) — {names} "
+            f"shown as unknown; log/marker jobs unaffected._"
+        )
+
+    rows = ["| job | last run | latest result |",
             "|---|---|---|"]
     for r in reports:
         if r.skipped_reason:
             rows.append(f"| {r.name} | — | _{r.skipped_reason}_ |")
+            continue
+        if r.pg:
+            rows.append(f"| {r.name} | {_pg_run_cell(r)} | {_pg_result_cell(r)} |")
             continue
         if not r.fired:
             crashed_suffix = " (crashed)" if r.tracebacks else ""
@@ -400,6 +568,10 @@ def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list
         f"## auto-review doctor — {today_pt.isoformat()}",
         "",
         summary,
+    ]
+    if degraded_line:
+        parts += ["", degraded_line]
+    parts += [
         "",
         format_self_liveness(today_pt, last_present, gaps),
         "",
@@ -570,7 +742,8 @@ def main() -> int:
     weekly_text = weekly_path.read_text(encoding="utf-8") if weekly_path.exists() else ""
 
     tracebacks = find_tracebacks(log_lines)
-    reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text, tracebacks)
+    pg_runs = query_latest_runs(os.environ.get(PG_DSN_ENV))
+    reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text, tracebacks, pg_runs=pg_runs)
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)
     section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness)

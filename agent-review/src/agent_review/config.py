@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import socket
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -27,9 +28,19 @@ class Settings(BaseSettings):
     # Schema name for the upstream read-only database (default: agentsview).
     pg_schema: str = Field("agentsview", alias="AGENT_REVIEW_PG_SCHEMA")
 
+    # ops.job_runs identity (auto-review-hg6.8). job_name must match a
+    # pre-registered ops.jobs row (FK; seeded in db/migrations/0007). job_host
+    # defaults to the machine hostname, matching the sibling PG writers.
+    job_name: str = Field("agent-review", alias="AGENT_REVIEW_JOB_NAME")
+    job_host: str = Field("", alias="AGENT_REVIEW_HOST")
+
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.tz_name)
+
+    @property
+    def host(self) -> str:
+        return self.job_host or socket.gethostname()
 
     @property
     def checkins_dir(self) -> Path:

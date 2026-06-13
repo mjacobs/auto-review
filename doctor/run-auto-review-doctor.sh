@@ -18,6 +18,13 @@
 
 set -euo pipefail
 
+# Source ~/.secrets for AUTO_REVIEW_DOCTOR_PG_DSN (ops.job_runs liveness,
+# auto-review-hg6.8). The cron-invoked wrapper gets no interactive profile, so
+# without this the DSN is never seen (the renderer wrapper needed the same fix,
+# fac6bba). The DSN is OPTIONAL — absent it, the doctor degrades to log/marker
+# liveness and shows the PG jobs as "unknown" — so there is NO hard `:?` guard.
+[[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
+
 VAULT="${VAULT_PATH:-$HOME/vault}"
 
 auto-review-doctor

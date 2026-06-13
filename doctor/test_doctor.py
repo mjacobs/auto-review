@@ -182,19 +182,20 @@ def test_section_info_agent_review_daily_present():
     assert note_str == ""
 
 
-def test_assess_jobs_skips_unmonitored_pg_writers():
-    # Post-ADR-002 / step-A: agent-review went --no-vault (hg6.6) and memex-review
-    # dissolved (hg6.4). Both are now catalogued as unmonitored (job_runs liveness
-    # lands in hg6.8), so assess_jobs emits NO report for either — even when an
-    # agent-review commit line is present in the log, it is not a monitored job.
+def test_assess_jobs_pg_writers_now_monitored():
+    # hg6.8 re-monitors the PG writers via ops.job_runs. With no pg_runs (PG
+    # unreachable) they surface as degraded reports rather than being skipped;
+    # memex-review is gone entirely; the marker jobs are unaffected. An
+    # agent-review commit line in the log is now irrelevant — it's a PG job.
     today = dt.date(2026, 5, 31)
     log = ["[main deadbee] agent-review: daily report 2026-05-31T21:01:01Z\n"]
     reports = doctor.assess_jobs(log, today, yesterday_checkin_text="", weekly_text="", tracebacks=[])
-    names = {r.name for r in reports}
-    assert "agent-review daily" not in names
-    assert "memex-review daily" not in names
-    # the remaining monitored daily is vault-review
-    assert "vault-review daily" in names
+    by_name = {r.name: r for r in reports}
+    assert "memex-review daily" not in by_name        # dissolved (hg6.4)
+    assert "vault-review daily" in by_name             # marker job, unaffected
+    for pg_name in ("agent-review daily", "check-in renderer daily", "memex-sync hourly"):
+        assert by_name[pg_name].pg is True
+        assert by_name[pg_name].pg_status == "degraded"  # pg_runs defaulted to None
 
 
 def test_assess_jobs_weekly_present_on_monday_with_reported_label():
@@ -306,24 +307,26 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
 
 
 def test_registry_monitored_jobs_have_liveness_config():
-    # Every monitored job must carry the fields the doctor needs to check it;
-    # unmonitored infra must NOT pretend to have liveness config.
+    # Every monitored job carries EXACTLY ONE liveness config: the marker path
+    # (commit_regex + marker + hhmm — vault-review, doctor self) or the PG path
+    # (pg_job_name + interval — the job_runs writers, hg6.8). Unmonitored infra
+    # pretends to have neither.
     for j in doctor.JOBS:
+        marker = bool(j.commit_regex and j.marker_tool and j.marker_key and j.hhmm)
+        pg = bool(j.pg_job_name and j.pg_interval_hours > 0)
         if j.monitored:
-            assert j.commit_regex is not None, f"{j.name}: monitored but no commit_regex"
-            assert j.marker_tool, f"{j.name}: monitored but no marker_tool"
-            assert j.marker_key, f"{j.name}: monitored but no marker_key"
-            assert j.hhmm, f"{j.name}: monitored but no expected time"
+            assert marker ^ pg, f"{j.name}: monitored needs exactly one of marker/PG config"
         else:
-            assert j.commit_regex is None and not j.marker_tool
+            assert not marker and not pg, f"{j.name}: unmonitored but has liveness config"
+            assert j.commit_regex is None and not j.marker_tool and not j.pg_job_name
 
 
 def test_registry_has_both_monitored_and_coverage_gaps():
     monitored = [j for j in doctor.JOBS if j.monitored]
     gaps = [j for j in doctor.JOBS if not j.monitored]
-    # 3 monitored after step-A (vault-review daily+weekly, doctor); the PG-row
-    # writers move back to monitored via job_runs liveness in hg6.8.
-    assert len(monitored) >= 3
+    # 6 monitored after hg6.8: 3 marker (vault-review daily+weekly, doctor) + 3
+    # PG (memex-sync, agent-review, renderer). Gaps remain (off-host infra etc).
+    assert len(monitored) >= 6
     assert len(gaps) >= 1  # the whole point: catalog what ISN'T watched
 
 
@@ -336,6 +339,110 @@ def test_render_moving_pieces_lists_all_with_coverage_flags():
     assert "✅" in doc and "⚠️ no" in doc  # both monitored and gap rows rendered
     assert "DO NOT EDIT BY HAND" in doc
     assert "auto-review-doctor:moving-pieces" in doc  # close marker for idempotent rewrite
+
+
+# ─── PG liveness path (auto-review-hg6.8) ─────────────────────────────────────
+
+# 2026-06-13 08:31 UTC ≈ 00:31 PT — when the doctor cron fires.
+NOW = dt.datetime(2026, 6, 13, 8, 31, 0, tzinfo=dt.timezone.utc)
+
+
+def _runrow(job_name: str, finished: dt.datetime, status: str = "ok", cost=None):
+    return doctor.RunRow(job_name=job_name, finished_at=finished, status=status, cost_usd=cost)
+
+
+def _pg_reports(pg_runs, today=dt.date(2026, 6, 13)):
+    return doctor.assess_jobs([], today, "", "", [], pg_runs=pg_runs, now_utc=NOW)
+
+
+def test_rows_to_runmap_parses_and_skips_malformed():
+    rows = [
+        ["memex-sync", "2026-06-13T21:41:01Z", "ok", ""],          # NULL cost -> None
+        ["agent-review", "2026-06-13T07:21:00Z", "ok", "0.1234"],
+        ["bad-ts", "not-a-date", "ok", ""],                        # skipped: bad timestamp
+        ["too-few"],                                               # skipped: < 4 fields
+    ]
+    m = doctor._rows_to_runmap(rows)
+    assert set(m) == {"memex-sync", "agent-review"}
+    assert m["memex-sync"].cost_usd is None
+    assert m["agent-review"].cost_usd == 0.1234
+    assert m["agent-review"].status == "ok"
+
+
+def test_query_latest_runs_degrades_without_dsn():
+    # No DSN -> None (the doctor falls back to log/marker), never raises.
+    assert doctor.query_latest_runs(None) is None
+    assert doctor.query_latest_runs("") is None
+
+
+def test_assess_pg_job_fresh_with_cost():
+    runs = {"agent-review": _runrow("agent-review", NOW - dt.timedelta(minutes=10), cost=0.05)}
+    ar = next(r for r in _pg_reports(runs) if r.name == "agent-review daily")
+    assert ar.pg and ar.fired and not ar.pg_overdue
+    assert ar.pg_status == "ok"
+    assert ar.pg_cost == "$0.0500"
+    assert ar.fired_at_pt == "01:21"  # 08:21 UTC -> 01:21 PT, today
+
+
+def test_assess_pg_job_renderer_day_old_row_is_fresh():
+    # The renderer (00:51) runs AFTER the 00:31 doctor, so its freshest row is
+    # ~24h old at doctor time — still within the 26h window, not overdue.
+    finished = NOW - dt.timedelta(hours=23, minutes=40)
+    runs = {"checkin-renderer-daily": _runrow("checkin-renderer-daily", finished)}
+    rr = next(r for r in _pg_reports(runs) if r.name == "check-in renderer daily")
+    assert rr.fired and not rr.pg_overdue
+    assert rr.fired_at_pt == "(2026-06-12)"
+
+
+def test_assess_pg_job_overdue_when_stale():
+    runs = {"checkin-renderer-daily": _runrow("checkin-renderer-daily", NOW - dt.timedelta(days=3))}
+    rr = next(r for r in _pg_reports(runs) if r.name == "check-in renderer daily")
+    assert rr.pg and not rr.fired and rr.pg_overdue
+    assert rr.fired_at_pt == "(2026-06-10)"
+
+
+def test_assess_pg_job_never_ran():
+    ms = next(r for r in _pg_reports({}) if r.name == "memex-sync hourly")
+    assert ms.pg and not ms.fired and ms.fired_at_pt is None
+    assert ms.pg_status is None  # no row at all
+
+
+def test_assess_pg_job_degraded_without_pg():
+    ms = next(r for r in _pg_reports(None) if r.name == "memex-sync hourly")
+    assert ms.pg and ms.pg_status == "degraded" and not ms.fired
+
+
+def test_assess_pg_job_surfaces_error_status():
+    runs = {"memex-sync": _runrow("memex-sync", NOW - dt.timedelta(minutes=20), status="error")}
+    ms = next(r for r in _pg_reports(runs) if r.name == "memex-sync hourly")
+    assert ms.fired  # ran 20 min ago, within the 2h hourly window
+    assert ms.pg_status == "error"
+
+
+def test_render_section_degraded_shows_banner_and_unknown():
+    today = dt.date(2026, 6, 13)
+    reports = _pg_reports(None, today)
+    out = doctor.render_section(today, reports, [], 0, (today - dt.timedelta(days=1), []))
+    assert "PG liveness unavailable" in out
+    assert "unknown (no PG)" in out
+    assert "jobs healthy" in out
+
+
+def test_render_section_pg_fresh_shows_status_and_cost():
+    today = dt.date(2026, 6, 13)
+    runs = {
+        "agent-review": _runrow("agent-review", NOW - dt.timedelta(minutes=10), cost=0.05),
+        "memex-sync": _runrow("memex-sync", NOW - dt.timedelta(minutes=20)),
+        "checkin-renderer-daily": _runrow(
+            "checkin-renderer-daily", NOW - dt.timedelta(hours=23, minutes=40)
+        ),
+    }
+    reports = _pg_reports(runs, today)
+    out = doctor.render_section(today, reports, [], 0, (today - dt.timedelta(days=1), []))
+    assert "PG liveness unavailable" not in out
+    assert "$0.0500" in out
+    assert "✓ ok" in out
+    assert "| last run | latest result |" in out
 
 
 if __name__ == "__main__":

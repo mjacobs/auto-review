@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+from dataclasses import dataclass
 
 import click
 from dateutil import parser as date_parser
@@ -13,8 +14,19 @@ from .config import get_settings
 from .db import connect
 from .digest import get_or_create_digest, get_or_create_digest_result
 from .extract import extract_day, extract_session
+from .runlog import record_best_effort, record_job_run
 from .synth import persist_report, synthesize_day
 from .vault import read_section, remove_section, write_section
+
+
+@dataclass
+class RunOutcome:
+    """What one date's `_run_one` produced — aggregated into the job_runs row."""
+
+    date: dt.date
+    sessions: int        # in-scope sessions seen
+    persisted: bool      # a daily_reports row was written
+    cost_usd: float      # summed LLM cost (0.0 when nothing persisted)
 
 # ─── date helpers ────────────────────────────────────────────────────────────
 
@@ -118,8 +130,61 @@ def run(date_str: str, dry_run: bool, no_vault: bool, do_print: bool, force: boo
     'yesterday', a date like '2026-05-14', or a range like
     '2026-05-10..2026-05-14' / 'last-week'."""
     dates = _parse_range(date_str)
-    for date in dates:
-        _run_one(date, dry_run=dry_run, no_vault=no_vault, do_print=do_print, force=force)
+    started_at = dt.datetime.now(dt.UTC)
+    outcomes: list[RunOutcome] = []
+    try:
+        for date in dates:
+            outcome = _run_one(
+                date, dry_run=dry_run, no_vault=no_vault, do_print=do_print, force=force
+            )
+            if outcome is not None:
+                outcomes.append(outcome)
+    except Exception as exc:
+        # Best-effort 'error' row so the doctor (auto-review-hg6.8) sees a
+        # crash as a failed run, not a silent overdue. The original error
+        # still propagates. Skipped under --dry-run (persists nothing).
+        if not dry_run:
+            record_best_effort(
+                get_settings(),
+                started_at=started_at,
+                status="error",
+                summary=_run_summary(dates, outcomes, error=f"{type(exc).__name__}: {exc}"),
+                cost_usd=_total_cost(outcomes),
+            )
+        raise
+    # --dry-run writes nothing (no job_runs row either); --no-vault DOES persist
+    # (it's the daily cron's mode) and therefore records its run here. A quiet
+    # day with no in-scope sessions still records 'ok' — the job ran.
+    if not dry_run:
+        record_job_run(
+            get_settings(),
+            started_at=started_at,
+            status="ok",
+            summary=_run_summary(dates, outcomes),
+            cost_usd=_total_cost(outcomes),
+        )
+
+
+def _total_cost(outcomes: list[RunOutcome]) -> float | None:
+    """Summed LLM cost across the invocation; None when nothing was persisted
+    (keeps the job_runs.cost_usd column NULL rather than a misleading 0.0000)."""
+    total = round(sum(o.cost_usd for o in outcomes), 4)
+    return total if any(o.persisted for o in outcomes) else None
+
+
+def _run_summary(
+    dates: list[dt.date], outcomes: list[RunOutcome], *, error: str | None = None
+) -> dict:
+    """The ops.job_runs summary payload for a `run` invocation."""
+    payload = {
+        "dates": [d.isoformat() for d in dates],
+        "reports": sum(1 for o in outcomes if o.persisted),
+        "sessions": sum(o.sessions for o in outcomes),
+        "model": get_settings().model_synth,
+    }
+    if error is not None:
+        payload["error"] = error
+    return payload
 
 
 # Convenience aliases
@@ -152,14 +217,14 @@ def _run_one(
     no_vault: bool,
     do_print: bool,
     force: bool,
-) -> None:
+) -> RunOutcome | None:
     s = get_settings()
     click.echo(f"\n=== {date.isoformat()} ({s.tz_name}) ===", err=True)
 
     bundles = extract_day(date)
     if not bundles:
         click.echo("  no in-scope sessions; skipping.", err=True)
-        return
+        return RunOutcome(date=date, sessions=0, persisted=False, cost_usd=0.0)
     click.echo(f"  {len(bundles)} in-scope sessions", err=True)
 
     pairs: list[tuple] = []
@@ -194,7 +259,7 @@ def _run_one(
         )
     if not pairs:
         click.echo("  no successful digests; aborting day.", err=True)
-        return
+        return RunOutcome(date=date, sessions=len(bundles), persisted=False, cost_usd=0.0)
 
     click.echo("  synthesizing daily narrative…", err=True)
     report = synthesize_day(
@@ -214,17 +279,21 @@ def _run_one(
 
     if dry_run:
         click.echo("  --dry-run: not persisting, not writing vault.", err=True)
-        return
+        return RunOutcome(date=date, sessions=len(bundles), persisted=False, cost_usd=0.0)
 
     persist_report(report)
     click.echo(f"  persisted to agent_review.daily_reports[{date.isoformat()}]", err=True)
+    outcome = RunOutcome(
+        date=date, sessions=len(bundles), persisted=True, cost_usd=report.est_cost_usd
+    )
 
     if no_vault:
         click.echo("  --no-vault: skipping vault write.", err=True)
-        return
+        return outcome
 
     path = write_section(date, report.section_md)
     click.echo(f"  wrote section → {path}", err=True)
+    return outcome
 
 
 # ─── show / reset ────────────────────────────────────────────────────────────
