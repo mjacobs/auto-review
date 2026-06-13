@@ -5,7 +5,6 @@
 #   CRON_HOST=user@host ./scripts/deploy.sh <tool>
 #   CRON_HOST=user@host ./scripts/deploy.sh agent-review
 #   CRON_HOST=user@host ./scripts/deploy.sh vault-review
-#   CRON_HOST=user@host ./scripts/deploy.sh memex-review
 #
 # Required env:
 #   CRON_HOST   ssh target for the cron host (e.g. "user@host" or an ssh
@@ -41,10 +40,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Tool metadata: wrapper name, cron line, required-secret grep patterns,
 # and whether to check ~/.pgpass line count.
 
+# NOTE: memex-review was dissolved 2026-06-13 (ADR 002 / beads auto-review-hg6.4)
+# — the renderer emits its section from PG, so it is no longer a deployable tool.
 declare -A TOOL_WRAPPER=(
   [agent-review]="run-agent-review-daily"
   [vault-review]="run-recap-daily"
-  [memex-review]="run-memex-review-daily"
 )
 
 # Cron lines use $HOME (escaped) so they resolve at the remote user's
@@ -52,21 +52,18 @@ declare -A TOOL_WRAPPER=(
 declare -A TOOL_CRON=(
   [agent-review]="21 0 * * *  run-agent-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
   [vault-review]="1 0 * * *  run-recap-daily          >> \$HOME/.local/state/auto-review/cron.log 2>&1"
-  [memex-review]="11 0 * * *  run-memex-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
 )
 
 # Grep patterns to check in ~/.secrets (space-separated list per tool).
 declare -A TOOL_SECRET_PATTERNS=(
   [agent-review]="^export PG_DSN= ^export LLM_API_KEY="
   [vault-review]=""
-  [memex-review]="^export MEMEX_URL= ^export MEMEX_CLIENT_ID= ^export MEMEX_CLIENT_SECRET="
 )
 
 # Whether to count ~/.pgpass lines for this tool.
 declare -A TOOL_CHECK_PGPASS=(
   [agent-review]=1
   [vault-review]=0
-  [memex-review]=0
 )
 
 # ---------------------------------------------------------------------------
@@ -80,7 +77,7 @@ die()  { printf '\033[1;31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
 usage() {
   printf 'Usage: CRON_HOST=user@host %s <tool>\n' "$(basename "$0")"
-  printf '  tool: agent-review | vault-review | memex-review\n'
+  printf '  tool: agent-review | vault-review\n'
   exit 1
 }
 

@@ -151,16 +151,16 @@ def test_find_tracebacks_parses_real_traceback():
 def test_assess_jobs_reports_crash():
     log = [
         "Traceback (most recent call last):\n",
-        "  File \"/home/mj/.local/share/pipx/venvs/memex-review/lib/python3.10/site-packages/memex_review/client.py\", line 45, in get_thoughts\n",
+        "  File \"/home/mj/.local/share/uv/tools/vault-review/lib/python3.13/site-packages/vault_review/gitdelta.py\", line 45, in collect\n",
         "    raise HTTPError(res.status_code, res.text)\n",
         "urllib.error.HTTPError: HTTP Error 500: Internal Server Error\n",
     ]
     tbs = doctor.find_tracebacks(log)
     reports = doctor.assess_jobs(log, dt.date(2026, 5, 31), "", "", tbs)
-    memex = next(r for r in reports if r.name == "memex-review daily")
-    assert memex.fired is False
-    assert len(memex.tracebacks) == 1
-    assert "HTTPError" in memex.tracebacks[0]
+    vr = next(r for r in reports if r.name == "vault-review daily")
+    assert vr.fired is False
+    assert len(vr.tracebacks) == 1
+    assert "HTTPError" in vr.tracebacks[0]
 
 
 def test_section_info_agent_review_daily_present():
@@ -182,24 +182,19 @@ def test_section_info_agent_review_daily_present():
     assert note_str == ""
 
 
-def test_assess_jobs_agent_review_daily_present():
+def test_assess_jobs_skips_unmonitored_pg_writers():
+    # Post-ADR-002 / step-A: agent-review went --no-vault (hg6.6) and memex-review
+    # dissolved (hg6.4). Both are now catalogued as unmonitored (job_runs liveness
+    # lands in hg6.8), so assess_jobs emits NO report for either — even when an
+    # agent-review commit line is present in the log, it is not a monitored job.
     today = dt.date(2026, 5, 31)
-    yesterday_text = """\
-# check-in — 2026-05-30
-
-## agent-review — 2026-05-30
-
-- did some work
-- agent was busy
-
-<!-- agent-review:report_date=2026-05-30 generated_at=2026-05-31T04:01:01Z -->
-"""
     log = ["[main deadbee] agent-review: daily report 2026-05-31T21:01:01Z\n"]
-    reports = doctor.assess_jobs(log, today, yesterday_checkin_text=yesterday_text, weekly_text="", tracebacks=[])
-    agent = next(r for r in reports if r.name == "agent-review daily")
-    assert agent.fired is True
-    assert agent.section_present is True
-    assert agent.section_lines == 2
+    reports = doctor.assess_jobs(log, today, yesterday_checkin_text="", weekly_text="", tracebacks=[])
+    names = {r.name for r in reports}
+    assert "agent-review daily" not in names
+    assert "memex-review daily" not in names
+    # the remaining monitored daily is vault-review
+    assert "vault-review daily" in names
 
 
 def test_assess_jobs_weekly_present_on_monday_with_reported_label():
@@ -326,7 +321,9 @@ def test_registry_monitored_jobs_have_liveness_config():
 def test_registry_has_both_monitored_and_coverage_gaps():
     monitored = [j for j in doctor.JOBS if j.monitored]
     gaps = [j for j in doctor.JOBS if not j.monitored]
-    assert len(monitored) >= 5
+    # 3 monitored after step-A (vault-review daily+weekly, doctor); the PG-row
+    # writers move back to monitored via job_runs liveness in hg6.8.
+    assert len(monitored) >= 3
     assert len(gaps) >= 1  # the whole point: catalog what ISN'T watched
 
 

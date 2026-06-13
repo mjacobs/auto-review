@@ -63,12 +63,11 @@ JOBS = [
     Job("vault-review daily", "auto-review LXC (.223)", "00:01 PT daily", "check-in § (daily recap)", True,
         hhmm="00:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),
         marker_tool="vault-review", marker_key="daily"),
-    Job("memex-review daily", "auto-review LXC (.223)", "00:11 PT daily", "check-in § (daily inbox)", True,
-        hhmm="00:11", commit_regex=re.compile(r"\[main [0-9a-f]+\] memex-review: daily inbox (\S+Z)"),
-        marker_tool="memex-review", marker_key="daily"),
-    Job("agent-review daily", "auto-review LXC (.223)", "00:21 PT daily", "check-in § (daily report)", True,
-        hhmm="00:21", commit_regex=re.compile(r"\[main [0-9a-f]+\] agent-review: daily report (\S+Z)"),
-        marker_tool="agent-review", marker_key="report_date"),
+    # memex-review DISSOLVED 2026-06-13 (hg6.4): the renderer emits the memex
+    # section from memex.captures; the tool, its 00:11 cron, and its marker are
+    # gone. agent-review went --no-vault the same day (hg6.6): it writes only a
+    # PG row, so it has no commit line or marker to monitor here — both it and
+    # the renderer become job_runs-liveness jobs in hg6.8 (catalogued below).
     Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:31 PT daily", "check-in § (health)", True,
         hhmm="00:31", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
@@ -83,9 +82,13 @@ JOBS = [
     Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
     Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
     Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),
-    # memex-sync records every run in ops.job_runs; flip to a monitored job_runs
-    # liveness check when the doctor learns to query PG (auto-review-hg6.8).
+    # The PG-row writers (ADR 002). Each records every run in ops.job_runs but
+    # is NOT liveness-monitored yet — the doctor still reads cron.log + markers,
+    # and these emit neither. Flip all three to monitored job_runs liveness
+    # checks when the doctor learns to query PG (auto-review-hg6.8).
     Job("memex-sync hourly", "auto-review LXC (.223)", ":41 hourly", "memex PG schema (captures/triage-seed/watermark)", False),
+    Job("agent-review daily", "auto-review LXC (.223)", "00:21 PT daily", "agent_review PG schema (daily report row; --no-vault)", False),
+    Job("check-in renderer daily", "auto-review LXC (.223)", "00:51 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", False),
     Job("memex-triage", "baox (workstation)", "*/5 systemd --user timer", "inbox/memex.md (exactly-once capture delivery)", False),
     Job("vault-agent capture", "openclaw", "harness-driven", "vault snapshots", False),
     Job("LiteLLM gateway", "portainer (.199)", "always-on (docker)", "LLM proxy endpoint", False),

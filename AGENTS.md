@@ -13,13 +13,20 @@ a separate, human-drained inbox note.
 
 | Tool | Source | Output |
 |---|---|---|
-| `agent-review` | `agentsview` Postgres | LLM-synthesized daily report (check-in section) |
+| `agent-review` | `agentsview` Postgres | LLM-synthesized daily report → `agent_review` PG schema (`--no-vault`); the renderer emits the check-in section |
 | `vault-review` | vault git history | deterministic delta recap (check-in section) |
-| `memex-review` | `serverless-memex` `/thoughts` API | deterministic capture inbox (check-in section) |
 | `memex-triage` | `serverless-memex` `/thoughts?since=<seq>` feed | exactly-once delivery into `inbox/memex.md` (rolling, action-framed) |
 
-The first three share one CLI shape and one marker-bracketed idempotency
-story. `memex-triage` instead tracks a monotonic-seq watermark in its own
+> **`memex-review` was dissolved 2026-06-13** (ADR 002 / beads `auto-review-hg6.4`).
+> It is no longer a tool: `memex-sync` mirrors captures `serverless-memex` (D1)
+> → the `memex` PG schema hourly, and the check-in renderer emits the memex
+> inbox section from those rows. Likewise `agent-review` now runs `--no-vault`
+> (writes only its PG row); the **renderer is the single writer** of the
+> machine-owned sections (ADR 002). See `renderer/DESIGN.md`.
+
+`vault-review` still uses the marker-bracketed idempotency story (its PG
+migration is `auto-review-hg6.7`). `memex-triage` instead tracks a
+monotonic-seq watermark in its own
 note's frontmatter and runs continuously (desktop `*/5` timer) rather than as
 a daily batch — see its [`DESIGN.md`](./memex-triage/DESIGN.md). See the
 top-level [`README.md`](./README.md) for the user-facing pitch.
@@ -90,12 +97,15 @@ the vault git lock. Wrappers can share a single log file (e.g.
   get committed and pushed by an external process. Don't `git add` /
   `git commit` the vault yourself; it'll happen.
 - **Cron / timer wrappers** (`vault-review/deploy/run-recap-*`,
-  `memex-review/deploy/run-memex-review-*`, `memex-triage/deploy/run-memex-triage.sh`,
-  future doctor wrapper): the wrapper is responsible for its own
-  `git add / commit / push` of the section it just wrote. This is intentional —
+  `renderer/deploy/run-checkin-renderer-daily.sh`, the doctor wrapper,
+  `memex-triage/deploy/run-memex-triage.sh`): the wrapper is responsible for its
+  own `git add / commit / push` of the section it just wrote. This is intentional —
   it avoids races between the run finishing and the background sync picking the
   file up, and keeps the per-run audit trail (commit message names the tool +
   date) in vault history. Existing production wrappers already do this.
+  **Under ADR 002 the PG-row writers lose their git path**: `agent-review`
+  runs `--no-vault` and `memex-sync` touches no files; the renderer is the
+  single writer that commits the machine-owned check-in sections.
   `memex-triage`'s wrapper additionally commits *only* its own
   `inbox/memex.md` and uses `--autostash`, since it runs `*/5` on a desktop
   you're actively editing in.

@@ -94,11 +94,6 @@ cd vault-review/
 uv tool install .
 vault-review run today --dry-run --print
 
-# memex-review — requires a deployed serverless-memex instance.
-cd memex-review/
-uv tool install .
-memex-review run today --dry-run --print
-
 # agent-review — requires an agentsview Postgres + Anthropic API key.
 cd agent-review/
 uv sync
@@ -128,8 +123,8 @@ deployment recipe.
 | Tool          | Status                | Running daily since |
 | :------------ | :-------------------- | :------------------ |
 | `vault-review` | Stable, in production | 2026-04             |
-| `memex-review` | Stable, in production | 2026-05             |
-| `agent-review` | Beta — `today` works end-to-end; cron deploy gated on credential-hygiene (dedicated PG user + Anthropic key) | not yet daily       |
+| `memex-review` | **Dissolved 2026-06-13** (ADR 002 / `auto-review-hg6.4`) — replaced by `memex-sync` → PG → renderer | 2026-05 – 2026-06   |
+| `agent-review` | Stable, in production (`--no-vault` → `agent_review` PG schema; renderer emits the section) | 2026-06             |
 
 ## Related projects
 

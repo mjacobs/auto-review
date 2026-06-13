@@ -64,8 +64,11 @@ Non-writing DB/config smoke test:
 ssh -o BatchMode=yes <cron-host> 'source ~/.secrets && agent-review extract yesterday --print >/tmp/agent-review-extract.json'
 ```
 
-First live vault write requires user confirmation. After that, idempotent
-reruns are allowed by project policy:
+The wrapper runs `agent-review run yesterday --no-vault` (ADR 002 /
+`auto-review-hg6.6`): it persists the daily report to the `agent_review` PG
+schema and touches **no files** — there is no vault write and no git path here
+(the check-in renderer emits the section from PG). Idempotent reruns upsert the
+same row:
 
 ```bash
 ssh -o BatchMode=yes <cron-host> 'run-agent-review-daily'
@@ -80,12 +83,12 @@ write are accepted:
 21 0 * * *  run-agent-review-daily  >> $HOME/.local/state/auto-review/cron.log 2>&1
 ```
 
-This fires at 00:21 daily, 10 minutes after `run-memex-review-daily` and
-20 minutes after `run-recap-daily`, so the jobs do not race on the vault git
-lock (and 00:21 clears the `agentsview pg push` at 00:00). The chain runs
-just after midnight so each day's recap materializes right after the day
-closes. Project policy requires user confirmation before editing the cron
-host's crontab.
+This fires at 00:21 daily, 20 minutes after `run-recap-daily` (vault-review),
+and clears the `agentsview pg push` at 00:00 so the day's sessions are present.
+It writes only its PG row (no git path), and the check-in renderer at 00:51
+reads that row to emit the section. The chain runs just after midnight so each
+day's report materializes right after the day closes. Project policy requires
+user confirmation before editing the cron host's crontab.
 
 ## upgrade
 

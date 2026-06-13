@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Daily agent-review cron wrapper.
 #
-# Runs agent-review against yesterday's agent sessions, then commits + pushes
-# any resulting markdown changes in the vault. Mirrors the sibling wrappers
-# for vault-review and memex-review.
+# Runs agent-review against yesterday's agent sessions in --no-vault mode:
+# the daily report is persisted to the agent_review PG schema ONLY — no
+# markdown, no marker, no git. The check-in renderer (run-checkin-renderer-
+# daily, 00:51) reads that row and emits the agent-review section as part of
+# its bracket. This is the ADR 002 split: machine data lives in Postgres,
+# the renderer is the single writer of the projection (beads auto-review-hg6.6).
 #
 # Installed at ~/.local/bin/run-agent-review-daily on the cron host and
 # invoked from the user crontab. PATH must include the directory holding
@@ -33,18 +36,8 @@ set -euo pipefail
 : "${PG_DSN:?PG_DSN must be set (provision ~/.secrets on this host)}"
 : "${LLM_API_KEY:?LLM_API_KEY must be set}"
 
-VAULT="${VAULT_PATH:-$HOME/vault}"
-
-agent-review run yesterday
-
-cd "$VAULT"
-if [[ -n "$(git status --porcelain)" ]]; then
-    git add -A
-    git commit -m "agent-review: daily report $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    # Rebase on any concurrent remote commit (e.g. another host's vault
-    # auto-sync) before pushing, then retry once if we still race. Without
-    # this, a non-fast-forward rejection leaves the vault diverged and every
-    # subsequent cron push fails silently (auto-review-qgo).
-    git pull --rebase --quiet
-    git push || { git pull --rebase --quiet && git push; }
-fi
+# --no-vault: write the report row to PG, touch no files. There is therefore
+# no git path here — the renderer owns the vault commit/push (AGENTS.md: only
+# the renderer's wrapper commits). A crashed run persists no row and goes
+# overdue under the doctor's job_runs liveness check (auto-review-hg6.8).
+agent-review run yesterday --no-vault
