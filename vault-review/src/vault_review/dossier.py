@@ -17,6 +17,23 @@ _HEADING_RE = re.compile(r"^#+\s+(.*)$")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _EMPHASIS_RE = re.compile(r"[*_`]+")
 
+# Non-prose constructs a note can lead with that must be skipped when hunting
+# for the first meaningful summary line. Without these, the raw markup leaks
+# into the one-line bullet (e.g. a `<style>` opener or a `> [!WARNING]` callout
+# marker rendered verbatim as the file's "summary").
+_HTML_BLOCK_OPEN_RE = re.compile(r"^\s*<(?:style|script)\b", re.IGNORECASE)
+_HTML_BLOCK_CLOSE_RE = re.compile(r"</(?:style|script)\s*>", re.IGNORECASE)
+_HTML_COMMENT_OPEN_RE = re.compile(r"^\s*<!--")
+_HTML_COMMENT_CLOSE_RE = re.compile(r"-->")
+# A line that is nothing but an HTML tag (a bare `<div>`/`</div>` wrapper).
+# Tightened so it does not swallow autolinks like `<https://example.com>`.
+_HTML_TAG_ONLY_RE = re.compile(r"^\s*</?[a-zA-Z][\w-]*(?:\s[^>]*)?>\s*$")
+# An auto-generated table-of-contents entry: a list item that is only an
+# in-page anchor link. Links to other notes (no leading `#`) are not skipped.
+_TOC_LINK_RE = re.compile(r"^\s*[-*+]\s*\[[^\]]*\]\(#[^)]*\)\s*$")
+_BLOCKQUOTE_RE = re.compile(r"^\s*>+\s?")
+_CALLOUT_RE = re.compile(r"^\[!\w+\][+-]?\s*(.*)$")
+
 _SUMMARY_MAX = 120
 
 
@@ -64,6 +81,8 @@ def summarize_file(vault_path: Path, rel: str) -> str:
             body_start = len(lines)
     heading = ""
     in_fence = False
+    in_html_block = False
+    in_comment = False
     for ln in lines[body_start:]:
         if _FENCE_RE.match(ln):
             # Toggle code-fence state and skip the delimiter; a fence opener
@@ -72,13 +91,51 @@ def summarize_file(vault_path: Path, rel: str) -> str:
             continue
         if in_fence:
             continue
+        # Skip embedded <style>/<script> blocks; some notes lead with CSS.
+        if in_html_block:
+            if _HTML_BLOCK_CLOSE_RE.search(ln):
+                in_html_block = False
+            continue
+        if _HTML_BLOCK_OPEN_RE.match(ln):
+            if not _HTML_BLOCK_CLOSE_RE.search(ln):
+                in_html_block = True
+            continue
+        # Skip HTML comments, including multi-line (e.g. <!--toc:start--> blocks).
+        if in_comment:
+            if _HTML_COMMENT_CLOSE_RE.search(ln):
+                in_comment = False
+            continue
+        if _HTML_COMMENT_OPEN_RE.match(ln):
+            if not _HTML_COMMENT_CLOSE_RE.search(ln):
+                in_comment = True
+            continue
+        if _TOC_LINK_RE.match(ln) or _HTML_TAG_ONLY_RE.match(ln):
+            continue
         hm = _HEADING_RE.match(ln)
         if hm:
             heading = _sanitize_summary(hm.group(1))
             continue
+        # Blockquotes / Obsidian callouts: unwrap the `>` markers. A bare
+        # callout marker (`> [!WARNING]`) carries no prose, so descend to the
+        # callout body; a marker with an inline title uses that title.
+        if _BLOCKQUOTE_RE.match(ln):
+            inner = ln
+            while _BLOCKQUOTE_RE.match(inner):
+                inner = _BLOCKQUOTE_RE.sub("", inner, count=1)
+            cm = _CALLOUT_RE.match(inner.strip())
+            if cm:
+                inner = cm.group(1)
+            inner = inner.strip()
+            if not inner:
+                continue
+            body = _sanitize_summary(inner)
+            if body:
+                return f"{heading} — {body}" if heading else body
+            continue
         if ln.strip():
             body = _sanitize_summary(ln)
-            return f"{heading} — {body}" if heading else body
+            if body:
+                return f"{heading} — {body}" if heading else body
     return heading or "(empty)"
 
 

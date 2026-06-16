@@ -100,6 +100,72 @@ class TestSummarizeFile:
         assert "```" not in result
         assert result == "review — Real first paragraph."
 
+    def test_html_style_block_skipped(self, tmp_path):
+        # Regression: reference/homelab/Network Overview.md leads with an
+        # embedded <style>…</style> CSS block; the summarizer grabbed `<style>`
+        # verbatim as the file's one-line summary.
+        p = tmp_path / "note.md"
+        p.write_text(
+            "---\ncssclass: wide-page\n---\n\n"
+            "<style>\n.foo { width: 100%; }\n</style>\n\n"
+            "# Network Overview\n\nCore hardware: the UDM Pro.\n",
+            encoding="utf-8",
+        )
+        result = summarize_file(tmp_path, "note.md")
+        assert "<style>" not in result
+        assert "width" not in result
+        assert result == "Network Overview — Core hardware: the UDM Pro."
+
+    def test_html_comment_and_toc_skipped(self, tmp_path):
+        # An auto-TOC (anchor-link list wrapped in <!--toc--> comments) is
+        # navigational chrome, not a summary.
+        p = tmp_path / "note.md"
+        p.write_text(
+            "# Overview\n\n"
+            "<!--toc:start-->\n"
+            "- [Overview](#overview)\n"
+            "  - [Topology](#topology)\n"
+            "<!--toc:end-->\n\n"
+            "## Topology\n\nThe real first paragraph.\n",
+            encoding="utf-8",
+        )
+        result = summarize_file(tmp_path, "note.md")
+        assert "toc" not in result
+        assert "](#" not in result
+        assert result == "Topology — The real first paragraph."
+
+    def test_callout_marker_descends_to_body(self, tmp_path):
+        # Regression: reference/homelab/OCI/OCI VM Access.md leads with a bare
+        # `> [!WARNING]` callout marker, rendered verbatim as the summary.
+        p = tmp_path / "note.md"
+        p.write_text(
+            "\n> [!WARNING]\n> **OCI OKE removed due to Oracle tier changes**\n\n"
+            "Hours of lost time.\n",
+            encoding="utf-8",
+        )
+        result = summarize_file(tmp_path, "note.md")
+        assert ">" not in result
+        assert "[!" not in result
+        assert result == "OCI OKE removed due to Oracle tier changes"
+
+    def test_callout_inline_title_used(self, tmp_path):
+        # A callout with an inline title uses the title text.
+        p = tmp_path / "note.md"
+        p.write_text("> [!NOTE] An important caveat\n> body line\n", encoding="utf-8")
+        assert summarize_file(tmp_path, "note.md") == "An important caveat"
+
+    def test_plain_blockquote_unwrapped(self, tmp_path):
+        # A non-callout blockquote has its `>` markers stripped.
+        p = tmp_path / "note.md"
+        p.write_text("> Just a quoted opening line.\n", encoding="utf-8")
+        assert summarize_file(tmp_path, "note.md") == "Just a quoted opening line."
+
+    def test_autolink_first_line_not_skipped(self, tmp_path):
+        # Guard: the HTML-tag-only skip must not swallow an autolink line.
+        p = tmp_path / "note.md"
+        p.write_text("<https://example.com/page>\n", encoding="utf-8")
+        assert summarize_file(tmp_path, "note.md") == "<https://example.com/page>"
+
     def test_long_summary_truncated(self, tmp_path):
         p = tmp_path / "note.md"
         p.write_text("X" * 400 + "\n", encoding="utf-8")
