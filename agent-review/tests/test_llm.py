@@ -60,6 +60,8 @@ def test_argv_text_call_has_no_json_schema():
     assert argv[argv.index("--output-format") + 1] == "json"
     assert "--safe-mode" in argv
     assert "--strict-mcp-config" in argv
+    # one-shot calls don't persist session transcripts to disk
+    assert "--no-session-persistence" in argv
     # tools disabled (empty string follows --tools)
     assert argv[argv.index("--tools") + 1] == ""
     # no settings.json loaded — blocks a host apiKeyHelper from diverting billing

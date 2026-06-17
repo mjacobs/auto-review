@@ -211,6 +211,9 @@ def _build_cli_argv(
         "json",
         "--safe-mode",
         "--strict-mcp-config",
+        # One-shot calls are never resumed — don't write session transcripts to
+        # disk (keeps ~/.claude from growing on the cron host's small volume).
+        "--no-session-persistence",
         # Load no user/project/local settings.json — its `apiKeyHelper` would
         # return a Console key that outranks subscription OAuth (safe-mode keeps
         # auth, so it can't block this). Empty list = no sources.

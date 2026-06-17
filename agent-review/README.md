@@ -114,6 +114,7 @@ completion — the flags it always passes:
 - `--output-format json` — parse the result event's `structured_output` / `result` + `usage`
 - `--json-schema <schema>` — **digest only**; forces schema-valid structured output
 - `--safe-mode` + `--strict-mcp-config` — strip CLAUDE.md / hooks / MCP / plugins (cheaper, deterministic)
+- `--no-session-persistence` — don't write session transcripts to disk (one-shot, never resumed)
 - `--setting-sources ""` — load no `settings.json` (so a host `apiKeyHelper` can't divert billing)
 - `--tools ""` — disable every tool, so the call can never run anything on the host
 
