@@ -26,6 +26,23 @@ from .extract import SessionBundle, ToolSummary
 _XML_TAG = re.compile(r"<[^>]+>")
 
 
+def _coerce_artifact(a: Any) -> Any:
+    """Normalize an artifact dict's keys to the {kind, ref, note} schema.
+
+    Local/cheaper models (e.g. qwen via the gateway) routinely invent their own
+    artifact shape — most commonly {"path", "type"} — which fails validation.
+    Map the common aliases; leave already-conformant dicts (and non-dicts)
+    untouched so the Anthropic/Claude paths are unaffected."""
+    if not isinstance(a, dict):
+        return a
+    if {"kind", "ref", "note"} <= a.keys():
+        return a
+    kind = a.get("kind") or a.get("type") or "other"
+    ref = a.get("ref") or a.get("path") or a.get("url") or a.get("sha") or a.get("reference") or ""
+    note = a.get("note") or a.get("description") or a.get("message") or a.get("title") or ""
+    return {"kind": str(kind), "ref": str(ref), "note": str(note)}
+
+
 def _coerce_list(val: Any) -> list:
     """Haiku 4.5 occasionally wraps list values in XML parameter tags or returns
     them as a JSON-encoded string. Coerce back to a plain list."""
@@ -70,18 +87,23 @@ class Digest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_list_fields(cls, values: dict) -> dict:
+        if not isinstance(values, dict):
+            return values
         for field in ("tags", "key_changes", "blockers"):
             if field in values:
                 values[field] = _coerce_list(values[field])
-        # artifacts may also come back as a string
+        # artifacts may come back as a JSON-encoded string, and individual
+        # entries may use non-schema key names (path/type/…).
         arts = values.get("artifacts")
         if isinstance(arts, str):
             cleaned = _XML_TAG.sub("", arts).strip()
             try:
                 parsed = json.loads(cleaned)
-                values["artifacts"] = parsed if isinstance(parsed, list) else []
+                arts = parsed if isinstance(parsed, list) else []
             except (json.JSONDecodeError, ValueError):
-                values["artifacts"] = []
+                arts = []
+        if isinstance(arts, list):
+            values["artifacts"] = [_coerce_artifact(a) for a in arts]
         return values
 
 

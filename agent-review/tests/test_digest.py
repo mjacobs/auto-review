@@ -96,6 +96,30 @@ def test_cached_digest_result_avoids_llm(monkeypatch: pytest.MonkeyPatch):
     assert fresh is False
 
 
+def test_artifact_key_aliases_are_coerced():
+    """Local/cheaper models emit {path,type} artifacts instead of {kind,ref,note};
+    the digest must coerce rather than reject the whole digest."""
+    d = Digest.model_validate(
+        {
+            "summary": "did the thing",
+            "project": "auto-review",
+            "outcome": "exploration",
+            "confidence": "high",
+            "artifacts": [
+                {"path": "memory/notes.md", "type": "file"},
+                {"kind": "commit", "ref": "abc123", "note": "fix"},  # already conformant
+            ],
+        }
+    )
+    assert len(d.artifacts) == 2
+    assert d.artifacts[0].kind == "file"
+    assert d.artifacts[0].ref == "memory/notes.md"
+    assert d.artifacts[0].note == ""
+    # conformant entry survives unchanged
+    assert d.artifacts[1].kind == "commit"
+    assert d.artifacts[1].ref == "abc123"
+
+
 def test_render_user_payload_includes_folded_subagent_transcript():
     parent = _bundle("parent")
     child = _bundle("child")
