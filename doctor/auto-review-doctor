@@ -94,32 +94,34 @@ JOBS = [
     # gone. agent-review went --no-vault the same day (hg6.6): it writes only a
     # PG row, so it has no commit line or marker to monitor here — it and the
     # renderer are now PG-monitored (job_runs liveness, below).
-    Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:31 PT daily", "check-in § (health)", True,
-        hhmm="00:31", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
+    Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:22 PT daily", "check-in § (health)", True,
+        hhmm="00:22", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
-    Job("vault-review weekly", "auto-review LXC (.223)", "Mon 10:01 PT", "weekly § (weekly recap)", True,
-        hhmm="10:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
+    Job("vault-review weekly", "auto-review LXC (.223)", "Mon 00:08 PT", "weekly § (weekly recap)", True,
+        hhmm="00:08", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
         marker_tool="vault-review", marker_key="weekly", is_weekly=True),
     # ── PG-monitored: liveness = a fresh ops.job_runs row, not log+marker ──────
     # The PG-row writers (ADR 002). Each appends an ops.job_runs row per run, so
     # the doctor checks "latest row younger than pg_interval_hours?" (hg6.8). The
-    # doctor runs 00:31 PT and reads a DAY-OLD signal: it fires before the
-    # renderer (00:51) and only ~10 min after agent-review (00:21, possibly still
-    # running), so a daily job's freshest row is normally ~24h old at doctor time
-    # — 26h flags a job dead a full day without false-flagging a late/in-flight
-    # nightly run. memex-sync is hourly (2h window). A crashed run writes no row
-    # and goes overdue; an 'error' row surfaces a handled failure.
-    Job("memex-sync hourly", "auto-review LXC (.223)", ":41 hourly", "memex PG schema (captures/triage-seed/watermark)", True,
+    # doctor runs 00:22 PT — LAST in the tightened nightly cluster, after
+    # agent-review (00:08) and the renderer (00:19) — so on a normal night it
+    # reads TODAY's minutes-old rows. The 26h window is kept anyway: it tolerates
+    # a slow/in-flight nightly run that finishes after the doctor (falling back to
+    # yesterday's ~24h-old row) while still flagging a job dead a full day.
+    # memex-sync is hourly (2h window). A crashed run writes no row and goes
+    # overdue; an 'error' row surfaces a handled failure. See docs/schedules.md.
+    Job("memex-sync hourly", "auto-review LXC (.223)", ":05 hourly", "memex PG schema (captures/triage-seed/watermark)", True,
         pg_job_name="memex-sync", pg_interval_hours=2),
-    Job("agent-review daily", "auto-review LXC (.223)", "00:21 PT daily", "agent_review PG schema (daily report row; --no-vault)", True,
+    Job("agent-review daily", "auto-review LXC (.223)", "00:08 PT daily", "agent_review PG schema (daily report row; --no-vault)", True,
         pg_job_name="agent-review", pg_interval_hours=26),
-    Job("check-in renderer daily", "auto-review LXC (.223)", "00:51 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
+    Job("check-in renderer daily", "auto-review LXC (.223)", "00:19 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
         pg_job_name="checkin-renderer-daily", pg_interval_hours=26),
     # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
     # agent-review's upstream data feed: pushes session data into agentsview PG,
-    # which agent-review reads at 00:21. The baox push is timing-critical (the
-    # 23:55 push + the */30 boundary at 00:00 land the prior day's sessions
-    # before the post-midnight chain); the two claw feeds are low-activity.
+    # which agent-review reads at 00:08. The baox push is timing-critical (the
+    # 23:55 push + the */30 boundary at 00:00 must land the prior day's sessions
+    # in the ~8 min before agent-review reads; the margin was trimmed from 21 min
+    # when the chain was tightened, so watch this gap); claw feeds are low-activity.
     Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
     Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
     Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),

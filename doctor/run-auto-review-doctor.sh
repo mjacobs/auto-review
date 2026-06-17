@@ -10,11 +10,11 @@
 # (sibling file in this dir, deployed to ~/.local/bin/) must also be on PATH.
 #
 # Cron line (gated on user confirmation per AGENTS.md):
-#   31 0 * * *  run-auto-review-doctor  >> ~/.local/state/auto-review/cron.log 2>&1
-# 00:31 PT runs last in the just-after-midnight chain (vault 00:01, memex 00:11,
-# agent 00:21) so the doctor sees the night's daily run results. The chain was
-# moved from the old 20:01-22:01 PT slot so each day's recap materializes right
-# after the day closes instead of ~21h later (auto-review-d4c follow-up).
+#   22 0 * * *  run-auto-review-doctor  >> ~/.local/state/auto-review/cron.log 2>&1
+# 00:22 PT runs LAST in the tightened just-after-midnight cluster (vault-review
+# 00:01, memex 00:05, agent-review + weekly[Mon] 00:08, renderer 00:19) so the
+# doctor sees the night's run results — including the renderer, which the old
+# 00:31 slot ran *before*. See docs/schedules.md.
 
 set -euo pipefail
 

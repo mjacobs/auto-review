@@ -7,8 +7,9 @@
 # records its ops.job_runs row.
 #
 # Installed at ~/.local/bin/run-checkin-renderer-daily on the cron host and
-# invoked from the user crontab (51 0 * * * — after the 00:41 hourly
-# memex-sync so late captures are in the mirror; see deploy/README.md).
+# invoked from the user crontab (19 0 * * * — after agent-review (00:08) has
+# landed its PG row and the 00:05 hourly memex-sync so late captures are in the
+# mirror; see docs/schedules.md).
 # PATH must include the directory holding the uv-tool-installed
 # `checkin-renderer` binary (commonly ~/.local/bin).
 #

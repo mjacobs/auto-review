@@ -50,7 +50,7 @@ declare -A TOOL_WRAPPER=(
 # Cron lines use $HOME (escaped) so they resolve at the remote user's
 # home directory regardless of which user the cron host runs as.
 declare -A TOOL_CRON=(
-  [agent-review]="21 0 * * *  run-agent-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
+  [agent-review]="8 0 * * *  run-agent-review-daily  >> \$HOME/.local/state/auto-review/cron.log 2>&1"
   [vault-review]="1 0 * * *  run-recap-daily          >> \$HOME/.local/state/auto-review/cron.log 2>&1"
 )
 
