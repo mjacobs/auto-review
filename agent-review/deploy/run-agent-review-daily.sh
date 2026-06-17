@@ -32,13 +32,18 @@
 #                            env form, Bedrock/Vertex switches) and passes
 #                            `--setting-sources ""` so a settings.json
 #                            apiKeyHelper can't divert it to a Console key.
-#   api                    — legacy: anthropic SDK. Needs LLM_API_KEY (and
-#                            optionally LLM_BASE_URL for a LiteLLM gateway).
+#   api                    — anthropic SDK over LLM_API_KEY (+ optional
+#                            LLM_BASE_URL for a LiteLLM gateway fronting a
+#                            local model).
+# Per-stage: LLM_BACKEND_DIGEST / LLM_BACKEND_SYNTH each override LLM_BACKEND for
+# that stage. The homelab runs digest=api (local model via gateway) and
+# synth=claude_cli (subscription).
 # Optional env:
 #   VAULT_PATH
 #   TZ
-#   MODEL_DIGEST / MODEL_SYNTH   — full model IDs; passed to `claude --model`
-#                                  (or registered on the gateway under api).
+#   MODEL_DIGEST / MODEL_SYNTH   — claude_cli stage: passed to `claude --model`
+#                                  (a Claude id/alias); api stage: a model the
+#                                  gateway knows (e.g. local-coder).
 #   PGPASSFILE
 
 set -euo pipefail
@@ -46,10 +51,13 @@ set -euo pipefail
 [[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
 
 : "${PG_DSN:?PG_DSN must be set (provision ~/.secrets on this host)}"
-# Under the default claude_cli backend no API key is needed (the subscription
-# pays). Only require LLM_API_KEY when explicitly using the legacy api backend.
-if [[ "${LLM_BACKEND:-claude_cli}" == "api" ]]; then
-  : "${LLM_API_KEY:?LLM_API_KEY must be set when LLM_BACKEND=api}"
+# Require LLM_API_KEY only if some stage actually uses the api backend. Each
+# stage's backend = its per-stage override, else the global LLM_BACKEND
+# (default claude_cli, which the subscription pays for — no key needed).
+_digest_backend="${LLM_BACKEND_DIGEST:-${LLM_BACKEND:-claude_cli}}"
+_synth_backend="${LLM_BACKEND_SYNTH:-${LLM_BACKEND:-claude_cli}}"
+if [[ "$_digest_backend" == "api" || "$_synth_backend" == "api" ]]; then
+  : "${LLM_API_KEY:?LLM_API_KEY must be set when a stage uses the api backend}"
 fi
 
 # --no-vault: write the report row to PG, touch no files. There is therefore

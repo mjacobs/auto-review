@@ -105,17 +105,22 @@ def complete(
     max_tokens: int = 4096,
     tool: dict[str, Any] | None = None,
     settings: Settings | None = None,
+    backend: str | None = None,
 ) -> LlmResult:
-    """Run one completion against the configured backend.
+    """Run one completion against ``backend`` (defaults to ``Settings.llm_backend``).
 
-    When ``tool`` is given (a ``{"name", "input_schema", ...}`` dict), the call
-    is forced to produce structured output matching ``tool["input_schema"]`` and
-    the result is returned in ``LlmResult.structured``; otherwise free text is
-    returned in ``LlmResult.text``. ``max_tokens`` applies to the API backend
-    only (the CLI uses the model's default ceiling).
+    Callers pass the per-stage backend (``settings.digest_backend`` /
+    ``settings.synth_backend``) so digest and synth can run on different
+    backends. When ``tool`` is given (a ``{"name", "input_schema", ...}`` dict),
+    the call is forced to produce structured output matching
+    ``tool["input_schema"]`` and the result is returned in
+    ``LlmResult.structured``; otherwise free text is returned in
+    ``LlmResult.text``. ``max_tokens`` applies to the API backend only (the CLI
+    uses the model's default ceiling).
     """
     s = settings or get_settings()
-    if s.llm_backend == "claude_cli":
+    chosen = backend or s.llm_backend
+    if chosen == "claude_cli":
         return _complete_cli(
             s, model=model, system_prompt=system_prompt, user_content=user_content, tool=tool
         )
@@ -258,9 +263,10 @@ def _complete_cli(
         ) from exc
 
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"claude -p exited {proc.returncode} (model={model}): {_tail(proc.stderr)}"
-        )
+        # claude often writes the human-readable error (bad model, "Not logged
+        # in", etc.) to its JSON *stdout*, not stderr — surface whichever we have.
+        detail = _tail(proc.stderr) or _result_error_text(proc.stdout) or "(no output)"
+        raise RuntimeError(f"claude -p exited {proc.returncode} (model={model}): {detail}")
 
     result = _extract_result(proc.stdout, stderr=proc.stderr)
     if result.get("is_error") or result.get("subtype") != "success":
@@ -326,6 +332,17 @@ def _cli_usage(u: dict[str, Any]) -> dict[str, int]:
         "cache_read_input_tokens": int(u.get("cache_read_input_tokens") or 0),
         "cache_creation_input_tokens": int(u.get("cache_creation_input_tokens") or 0),
     }
+
+
+def _result_error_text(stdout: str) -> str:
+    """Best-effort human-readable error from a failing `claude -p` stdout. On a
+    non-zero exit `claude` may still emit its JSON result event with the message
+    in `result`; fall back to the raw stdout tail if it isn't parseable."""
+    try:
+        res = _extract_result(stdout)
+    except RuntimeError:
+        return _tail(stdout)
+    return _tail(str(res.get("result") or "")) or _tail(stdout)
 
 
 def _tail(text: str | None, n: int = 500) -> str:

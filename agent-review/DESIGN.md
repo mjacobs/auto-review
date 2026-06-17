@@ -215,11 +215,19 @@ Stage 2 and Stage 3 don't talk to a provider directly — they call
   `--safe-mode` keeps active and which outranks OAuth). What's left is keychain
   OAuth or `CLAUDE_CODE_OAUTH_TOKEN`.
 - **`api`** — the `anthropic` SDK over `LLM_API_KEY` / `LLM_BASE_URL`, with
-  forced `tool_choice` for the digest. The original path; kept as a fallback.
+  forced `tool_choice` for the digest. Direct Anthropic, or a LiteLLM gateway
+  fronting a local model.
 
-Both return a normalized `usage` dict (the same four token keys), so the cost
-rollup and the `session_digests` / `daily_reports` columns are backend-agnostic.
-`claude_cli` records the *equivalent* API cost as a proxy for quota burn.
+`LLM_BACKEND_DIGEST` / `LLM_BACKEND_SYNTH` override the global `LLM_BACKEND` per
+stage (resolved by `Settings.digest_backend` / `synth_backend`), so the stages
+can run on different backends — the homelab routes digest to a local model via
+the gateway (`api`) and synth to the subscription (`claude_cli`). `complete()`
+takes the resolved backend as an argument.
+
+Both backends return a normalized `usage` dict (the same four token keys), so the
+cost rollup and the `session_digests` / `daily_reports` columns are
+backend-agnostic. `claude_cli` records the *equivalent* API cost as a proxy for
+quota burn; a free local model prices to ~$0 via its pricing-table row.
 
 ## Storage
 

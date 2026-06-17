@@ -24,12 +24,21 @@ class Settings(BaseSettings):
     # LLM backend for the digest (Stage 2) and synth (Stage 3) calls:
     #   "claude_cli" — shell out to `claude -p` (billed to the Claude Max
     #                  subscription's programmatic quota; no API key needed).
-    #   "api"        — the anthropic SDK over LLM_API_KEY/LLM_BASE_URL.
+    #   "api"        — the anthropic SDK over LLM_API_KEY/LLM_BASE_URL (direct
+    #                  Anthropic, or a LiteLLM gateway fronting a local model).
     # Default is claude_cli: the Console API account is unfunded, so the
-    # subscription is the only working path. See llm.py.
+    # subscription is the only first-party path. See llm.py.
     llm_backend: Literal["api", "claude_cli"] = Field("claude_cli", alias="LLM_BACKEND")
 
-    # Required only when llm_backend == "api" (enforced below).
+    # Per-stage backend overrides. Each defaults to llm_backend when unset, so a
+    # mixed setup is possible — e.g. digest on a local model via the gateway
+    # (LLM_BACKEND_DIGEST=api, MODEL_DIGEST=local-coder) while synth uses the
+    # subscription (LLM_BACKEND_SYNTH=claude_cli). Resolved via the
+    # digest_backend / synth_backend properties below.
+    backend_digest: Literal["api", "claude_cli"] | None = Field(None, alias="LLM_BACKEND_DIGEST")
+    backend_synth: Literal["api", "claude_cli"] | None = Field(None, alias="LLM_BACKEND_SYNTH")
+
+    # Required only when an effective stage backend is "api" (enforced below).
     llm_api_key: SecretStr | None = Field(None, alias="LLM_API_KEY")
     llm_base_url: str | None = Field(None, alias="LLM_BASE_URL")
 
@@ -53,12 +62,23 @@ class Settings(BaseSettings):
     job_name: str = Field("agent-review", alias="AGENT_REVIEW_JOB_NAME")
     job_host: str = Field("", alias="AGENT_REVIEW_HOST")
 
+    @property
+    def digest_backend(self) -> str:
+        """Effective backend for Stage 2 (per-stage override → global default)."""
+        return self.backend_digest or self.llm_backend
+
+    @property
+    def synth_backend(self) -> str:
+        """Effective backend for Stage 3 (per-stage override → global default)."""
+        return self.backend_synth or self.llm_backend
+
     @model_validator(mode="after")
     def _require_api_key_for_api_backend(self) -> Settings:
-        if self.llm_backend == "api" and self.llm_api_key is None:
+        if "api" in (self.digest_backend, self.synth_backend) and self.llm_api_key is None:
             raise ValueError(
-                "LLM_API_KEY is required when LLM_BACKEND=api. Set a key, or use "
-                "LLM_BACKEND=claude_cli to bill the Claude Max subscription instead."
+                "LLM_API_KEY is required when a stage uses the api backend "
+                "(LLM_BACKEND / LLM_BACKEND_DIGEST / LLM_BACKEND_SYNTH = api). Set a "
+                "key, or use claude_cli to bill the Claude Max subscription instead."
             )
         return self
 

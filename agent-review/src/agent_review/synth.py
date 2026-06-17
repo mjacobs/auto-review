@@ -211,10 +211,11 @@ def _call_llm(
         user_content=_render_synth_payload(date, pairs, stats),
         max_tokens=4096,
         settings=s,
+        backend=s.synth_backend,
     )
     if not result.text:
         raise RuntimeError(
-            f"No text in synthesis response (model={s.model_synth}, backend={s.llm_backend})"
+            f"No text in synthesis response (model={s.model_synth}, backend={s.synth_backend})"
         )
     return result.text, result.usage
 

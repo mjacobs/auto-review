@@ -87,9 +87,11 @@ All via environment or `.env`:
 | Variable                              | Default                              | Description                                                          |
 | ------------------------------------- | ------------------------------------ | -------------------------------------------------------------------- |
 | `PG_DSN`                              | _(required)_                         | Postgres DSN; omit password to use `PGPASSFILE` / `~/.pgpass`       |
-| `LLM_BACKEND`                         | `claude_cli`                         | `claude_cli` → run digest/synth via `claude -p` (Claude Max subscription); `api` → the anthropic SDK. See [LLM backends](#llm-backends) |
-| `LLM_API_KEY`                         | _(required iff `LLM_BACKEND=api`)_   | API key sent to the LLM endpoint. When `LLM_BASE_URL` is set this is typically a LiteLLM virtual key; otherwise a direct provider key. Ignored under `claude_cli` |
-| `LLM_BASE_URL`                        | _(unset → api.anthropic.com)_        | `api` backend only. Override the LLM SDK base URL — e.g. a LiteLLM gateway (`https://llm.example.internal`) for a per-client virtual key |
+| `LLM_BACKEND`                         | `claude_cli`                         | Global backend: `claude_cli` → run digest/synth via `claude -p` (Claude Max subscription); `api` → the anthropic SDK. See [LLM backends](#llm-backends) |
+| `LLM_BACKEND_DIGEST`                  | _(= `LLM_BACKEND`)_                  | Per-stage override for the digest stage. Lets you mix — e.g. `api` (local model via gateway) for digest |
+| `LLM_BACKEND_SYNTH`                   | _(= `LLM_BACKEND`)_                  | Per-stage override for the synth stage — e.g. `claude_cli` (subscription) for synth |
+| `LLM_API_KEY`                         | _(required iff a stage = `api`)_     | API key sent to the LLM endpoint. When `LLM_BASE_URL` is set this is typically a LiteLLM virtual key; otherwise a direct provider key. Ignored by `claude_cli` stages |
+| `LLM_BASE_URL`                        | _(unset → api.anthropic.com)_        | `api` stages only. Override the LLM SDK base URL — e.g. a LiteLLM gateway (`https://llm.example.internal`) fronting a local model |
 | `CLAUDE_CLI_BIN`                      | `claude`                             | `claude_cli` backend: path to the Claude Code binary                 |
 | `CLAUDE_CLI_TIMEOUT`                  | `300`                                | `claude_cli` backend: per-call timeout, seconds                      |
 | `CLAUDE_CLI_EXTRA_ARGS`              | _(empty)_                            | `claude_cli` backend: extra flags appended to every `claude -p` (shlex-split), e.g. `--max-budget-usd 0.50` |
@@ -135,8 +137,26 @@ and (b) passes `--setting-sources ""` so a `settings.json` `apiKeyHelper` (which
 loaded. Recorded `est_cost_usd` is the *equivalent* API cost (a proxy for quota
 burn), computed from token usage exactly as the `api` backend is.
 
-**`api` (legacy).** The `anthropic` SDK against `LLM_API_KEY` / `LLM_BASE_URL`
-(direct or via a LiteLLM gateway). Requires `LLM_API_KEY`.
+**`api`.** The `anthropic` SDK against `LLM_API_KEY` / `LLM_BASE_URL` — direct
+Anthropic, or a LiteLLM gateway fronting a local model. Requires `LLM_API_KEY`.
+
+**Per-stage / hybrid.** `LLM_BACKEND_DIGEST` and `LLM_BACKEND_SYNTH` override the
+global backend per stage (each defaults to `LLM_BACKEND`), so the two stages can
+run on different backends. The homelab setup routes the cheap, high-volume digest
+stage to a **local model** (qwen on a workstation GPU, behind a LiteLLM gateway —
+roughly Haiku-quality in our eval, and free) while synth uses the **subscription**:
+
+```env
+LLM_BACKEND_DIGEST=api          # digest → gateway
+MODEL_DIGEST=local-coder        # …a local model registered on the gateway
+LLM_BASE_URL=https://llm.example.internal
+LLM_API_KEY=sk-<gateway-virtual-key>
+
+LLM_BACKEND_SYNTH=claude_cli    # synth → Claude Max subscription
+MODEL_SYNTH=claude-sonnet-4-6
+```
+
+`LLM_API_KEY` is required whenever *any* stage uses the `api` backend.
 
 ### Routing via LiteLLM (`api` backend only)
 

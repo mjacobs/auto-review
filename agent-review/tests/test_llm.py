@@ -222,6 +222,20 @@ def test_complete_cli_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch):
         llm._complete_cli(_settings(), model="m", system_prompt="S", user_content="U", tool=None)
 
 
+def test_complete_cli_nonzero_exit_surfaces_stdout_error(monkeypatch: pytest.MonkeyPatch):
+    # claude writes "bad model" type errors to its JSON stdout, not stderr; the
+    # raised error must still carry the human message (regression: an empty-stderr
+    # exit once surfaced as a bare "exited 1" with no clue).
+    stdout = json.dumps(
+        [{"type": "result", "subtype": "error", "is_error": True,
+          "result": "Model not found: local-coder"}]
+    )
+    _patch_run(monkeypatch, proc=_FakeProc(stdout=stdout, stderr="", returncode=1))
+    with pytest.raises(RuntimeError, match="Model not found: local-coder"):
+        llm._complete_cli(_settings(), model="local-coder", system_prompt="S",
+                          user_content="U", tool=None)
+
+
 def test_complete_cli_is_error_raises(monkeypatch: pytest.MonkeyPatch):
     stdout = json.dumps(
         [{"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "nope"}]
@@ -288,3 +302,41 @@ def test_complete_dispatches_to_api(monkeypatch: pytest.MonkeyPatch):
         settings=_settings(LLM_BACKEND="api", LLM_API_KEY="sk-x"),
     )
     assert out.text == "api"
+
+
+# ─── per-stage backend selection ─────────────────────────────────────────────
+
+
+def test_per_stage_backend_defaults_to_global():
+    s = _settings(LLM_BACKEND="claude_cli")
+    assert s.digest_backend == "claude_cli"
+    assert s.synth_backend == "claude_cli"
+
+
+def test_per_stage_backend_override():
+    # The hybrid the homelab uses: digest on the local-model gateway, synth on
+    # the subscription.
+    s = _settings(LLM_BACKEND="claude_cli", LLM_BACKEND_DIGEST="api", LLM_API_KEY="sk-x")
+    assert s.digest_backend == "api"
+    assert s.synth_backend == "claude_cli"
+
+
+def test_per_stage_api_requires_key():
+    with pytest.raises(ValueError, match="LLM_API_KEY is required"):
+        _settings(LLM_BACKEND="claude_cli", LLM_BACKEND_DIGEST="api", LLM_API_KEY=None)
+
+
+def test_complete_honors_explicit_backend(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(llm, "_complete_api", lambda s, **kw: llm.LlmResult(text="api"))
+    monkeypatch.setattr(llm, "_complete_cli", lambda s, **kw: llm.LlmResult(text="cli"))
+    s = _settings(LLM_BACKEND="claude_cli", LLM_BACKEND_DIGEST="api", LLM_API_KEY="sk-x")
+    # explicit backend arg overrides settings.llm_backend (this is how digest/
+    # synth route to their own per-stage backend)
+    assert (
+        llm.complete(model="m", system_prompt="S", user_content="U",
+                     settings=s, backend=s.digest_backend).text == "api"
+    )
+    assert (
+        llm.complete(model="m", system_prompt="S", user_content="U",
+                     settings=s, backend=s.synth_backend).text == "cli"
+    )

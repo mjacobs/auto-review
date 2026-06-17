@@ -218,11 +218,12 @@ def _call_llm(bundle: SessionBundle) -> tuple[Digest, dict[str, int]]:
         max_tokens=4096,
         tool=SUBMIT_DIGEST_TOOL,
         settings=s,
+        backend=s.digest_backend,
     )
     if result.structured is None:
         raise RuntimeError(
             f"No structured digest in response for session {bundle.session_id} "
-            f"(model={s.model_digest}, backend={s.llm_backend})"
+            f"(model={s.model_digest}, backend={s.digest_backend})"
         )
     return Digest.model_validate(result.structured), result.usage
 
