@@ -15,18 +15,30 @@
 #
 # Required env (sourced from ~/.secrets if present):
 #   PG_DSN                 — recommend dedicated `agent_review` PG user, not admin
-#   LLM_API_KEY            — key for the LLM endpoint. When LLM_BASE_URL points
-#                            at a LiteLLM gateway, this is a gateway virtual
-#                            key; otherwise a direct provider key.
+#
+# LLM backend (LLM_BACKEND, default claude_cli):
+#   claude_cli (default)   — digest/synth run via `claude -p`, billed to the
+#                            Claude Max subscription's programmatic quota. NO
+#                            API key needed. Requires:
+#                              · `claude` on PATH (CLAUDE_CLI_BIN to override).
+#                              · the CLI authenticated to the subscription on
+#                                this host — either an interactive `claude`
+#                                login, or a long-lived token from
+#                                `claude setup-token` exported as
+#                                CLAUDE_CODE_OAUTH_TOKEN in ~/.secrets.
+#                            agent-review pins billing to the subscription: it
+#                            scrubs every off-subscription auth/routing var from
+#                            the `claude` subprocess (API keys, apiKeyHelper's
+#                            env form, Bedrock/Vertex switches) and passes
+#                            `--setting-sources ""` so a settings.json
+#                            apiKeyHelper can't divert it to a Console key.
+#   api                    — legacy: anthropic SDK. Needs LLM_API_KEY (and
+#                            optionally LLM_BASE_URL for a LiteLLM gateway).
 # Optional env:
-#   LLM_BASE_URL           — override the LLM SDK base URL. Point at an
-#                            internal LiteLLM gateway (e.g.
-#                            https://llm.example.internal) so this host only
-#                            needs a scoped gateway virtual key.
 #   VAULT_PATH
 #   TZ
-#   MODEL_DIGEST           — must be registered on the gateway when LLM_BASE_URL is set
-#   MODEL_SYNTH            — same as MODEL_DIGEST
+#   MODEL_DIGEST / MODEL_SYNTH   — full model IDs; passed to `claude --model`
+#                                  (or registered on the gateway under api).
 #   PGPASSFILE
 
 set -euo pipefail
@@ -34,7 +46,11 @@ set -euo pipefail
 [[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
 
 : "${PG_DSN:?PG_DSN must be set (provision ~/.secrets on this host)}"
-: "${LLM_API_KEY:?LLM_API_KEY must be set}"
+# Under the default claude_cli backend no API key is needed (the subscription
+# pays). Only require LLM_API_KEY when explicitly using the legacy api backend.
+if [[ "${LLM_BACKEND:-claude_cli}" == "api" ]]; then
+  : "${LLM_API_KEY:?LLM_API_KEY must be set when LLM_BACKEND=api}"
+fi
 
 # --no-vault: write the report row to PG, touch no files. There is therefore
 # no git path here — the renderer owns the vault commit/push (AGENTS.md: only

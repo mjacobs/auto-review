@@ -12,11 +12,11 @@ import re
 from importlib.resources import files
 from typing import Any, Literal
 
-from anthropic import Anthropic
 from psycopg.types.json import Json
 from pydantic import BaseModel, Field, model_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from . import llm
 from .config import get_settings
 from .db import connect
 from .extract import SessionBundle, ToolSummary
@@ -211,46 +211,20 @@ def _upsert(bundle: SessionBundle, digest: Digest, usage: dict[str, int]) -> Non
 @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=2, max=30))
 def _call_llm(bundle: SessionBundle) -> tuple[Digest, dict[str, int]]:
     s = get_settings()
-    client = Anthropic(
-        api_key=s.llm_api_key.get_secret_value(),
-        base_url=s.llm_base_url,
-    )
-    user_payload = _render_user_payload(bundle)
-
-    response = client.messages.create(
+    result = llm.complete(
         model=s.model_digest,
+        system_prompt=_load_system_prompt(),
+        user_content=_render_user_payload(bundle),
         max_tokens=4096,
-        system=[
-            {
-                "type": "text",
-                "text": _load_system_prompt(),
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        tools=[SUBMIT_DIGEST_TOOL],
-        tool_choice={"type": "tool", "name": "submit_digest"},
-        messages=[{"role": "user", "content": user_payload}],
+        tool=SUBMIT_DIGEST_TOOL,
+        settings=s,
     )
-
-    tool_block = next(
-        (b for b in response.content if getattr(b, "type", None) == "tool_use"),
-        None,
-    )
-    if tool_block is None:
-        stop_reason = getattr(response, "stop_reason", "unknown")
+    if result.structured is None:
         raise RuntimeError(
-            f"No tool_use block in response for session {bundle.session_id} "
-            f"(stop_reason={stop_reason}, model={s.model_digest})"
+            f"No structured digest in response for session {bundle.session_id} "
+            f"(model={s.model_digest}, backend={s.llm_backend})"
         )
-
-    digest = Digest.model_validate(tool_block.input)
-    usage = {
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens,
-        "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-        "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-    }
-    return digest, usage
+    return Digest.model_validate(result.structured), result.usage
 
 
 # ─── render the user message ─────────────────────────────────────────────────

@@ -51,8 +51,8 @@ into a narrative.
 
 ## Hard rules
 
-- Output via the `submit_digest` tool. Do not write any prose outside the tool
-  call.
+- Emit **only** the structured digest object (the fields above). Do not write
+  any prose, preamble, or commentary outside it.
 - Preserve file paths and identifiers exactly as they appear (case, slashes).
 - Never invent commit SHAs, PR numbers, or file paths.
 - If the session's `is_truncated` flag is true, lower confidence accordingly.

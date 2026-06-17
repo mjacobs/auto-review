@@ -199,6 +199,28 @@ Session links use the `agentsview://session/<id>` URI scheme (not yet
 resolvable; reserved for the future viewer). Until then they render as inert
 links — fine for grep + paste-into-psql.
 
+### LLM backend (`llm.py`)
+
+Stage 2 and Stage 3 don't talk to a provider directly — they call
+`llm.complete(...)`, which dispatches on `LLM_BACKEND`:
+
+- **`claude_cli`** (default) — shell out to `claude -p` so calls are billed to
+  the Claude Max subscription's programmatic quota. Forced structured output
+  uses `--json-schema` (the digest's pydantic schema, `$defs`/`$ref` and all);
+  `--safe-mode --strict-mcp-config --tools ""` keep the call a side-effect-free
+  pure completion. Billing is pinned to the subscription two ways: the subprocess
+  env is scrubbed of all off-subscription auth/routing vars (API keys,
+  `CLAUDE_CODE_API_KEY_HELPER`, the Bedrock/Vertex switches), and
+  `--setting-sources ""` blocks loading a `settings.json` `apiKeyHelper` (which
+  `--safe-mode` keeps active and which outranks OAuth). What's left is keychain
+  OAuth or `CLAUDE_CODE_OAUTH_TOKEN`.
+- **`api`** — the `anthropic` SDK over `LLM_API_KEY` / `LLM_BASE_URL`, with
+  forced `tool_choice` for the digest. The original path; kept as a fallback.
+
+Both return a normalized `usage` dict (the same four token keys), so the cost
+rollup and the `session_digests` / `daily_reports` columns are backend-agnostic.
+`claude_cli` records the *equivalent* API cost as a proxy for quota burn.
+
 ## Storage
 
 New schema **`agent_review`** in the same database (separate from `agentsview`,
@@ -313,6 +335,12 @@ agent-review/
 ```
 
 ## Cost & token budget
+
+> Under the default `claude_cli` backend these dollar figures are the
+> *equivalent* API cost, recorded as a proxy for **subscription quota burn** —
+> not actual Console spend (marginal API cost is $0). See
+> [LLM backend](#llm-backend-llmpy). They remain the real billed cost only under
+> `LLM_BACKEND=api`.
 
 Rough sizing from observed data (5 months, 567 sessions, 14k messages):
 

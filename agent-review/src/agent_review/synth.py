@@ -9,10 +9,10 @@ from collections import Counter
 from importlib.resources import files
 from typing import Any
 
-from anthropic import Anthropic
 from psycopg.types.json import Json
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from . import llm
 from .config import get_settings
 from .db import connect
 from .digest import Digest, estimate_cost, fetch_pricing
@@ -205,40 +205,18 @@ def _call_llm(
     stats: dict[str, Any],
 ) -> tuple[str, dict[str, int]]:
     s = get_settings()
-    client = Anthropic(
-        api_key=s.llm_api_key.get_secret_value(),
-        base_url=s.llm_base_url,
-    )
-
-    user_payload = _render_synth_payload(date, pairs, stats)
-
-    response = client.messages.create(
+    result = llm.complete(
         model=s.model_synth,
+        system_prompt=_load_system_prompt(),
+        user_content=_render_synth_payload(date, pairs, stats),
         max_tokens=4096,
-        system=[
-            {
-                "type": "text",
-                "text": _load_system_prompt(),
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_payload}],
+        settings=s,
     )
-
-    text_block = next(
-        (b for b in response.content if getattr(b, "type", None) == "text"),
-        None,
-    )
-    if text_block is None:
-        raise RuntimeError("No text block in synthesis response")
-
-    usage = {
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens,
-        "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-        "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-    }
-    return text_block.text.strip(), usage
+    if not result.text:
+        raise RuntimeError(
+            f"No text in synthesis response (model={s.model_synth}, backend={s.llm_backend})"
+        )
+    return result.text, result.usage
 
 
 def _render_synth_payload(
