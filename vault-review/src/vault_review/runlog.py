@@ -47,7 +47,15 @@ def record_job_run(
     can't undo a written section, and a failed run still records its 'error' row
     (the doctor's liveness evidence). ``job_name`` is passed explicitly because
     one CLI process serves both the daily and weekly jobs.
+
+    PG liveness is OPTIONAL (config.py): with no DSN the run still writes its
+    section and simply records no row. Without this early return the success
+    path would hit db.connect()'s RuntimeError *after* the vault write, crashing
+    an otherwise-successful manual / no-PG run (the error path is already
+    guarded by record_best_effort; only the ok path was exposed).
     """
+    if settings.pg_dsn is None:
+        return
     connect = connect or db.connect
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
