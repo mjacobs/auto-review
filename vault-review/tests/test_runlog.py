@@ -11,6 +11,7 @@ import datetime as dt
 
 import pytest
 
+from vault_review import config
 from vault_review.runlog import SQL_INSERT_JOB_RUN, record_best_effort, record_job_run
 
 STARTED = dt.datetime(2026, 6, 15, 7, 1, 0, tzinfo=dt.UTC)
@@ -108,3 +109,26 @@ def test_record_best_effort_records_error_row_on_success(settings, store):
     assert len(store.job_runs) == 1
     assert store.job_runs[0]["status"] == "error"
     assert store.job_runs[0]["job_name"] == "vault-review-weekly"
+
+
+def test_record_job_run_is_noop_without_dsn(monkeypatch, tmp_path, store):
+    # PG liveness is OPTIONAL: with VAULT_REVIEW_PG_DSN unset, a successful run
+    # must record no row and — critically — NOT crash on db.connect()'s
+    # RuntimeError after the section is already written (PR #1 gemini finding).
+    monkeypatch.delenv("VAULT_REVIEW_PG_DSN", raising=False)
+    monkeypatch.setenv("VAULT_PATH", str(tmp_path / "vault"))
+    monkeypatch.setattr(config, "_settings", None)
+    settings_no_dsn = config.get_settings()
+    assert settings_no_dsn.pg_dsn is None
+
+    # Must not raise, even though store.connect would record/fail if reached.
+    record_job_run(
+        settings_no_dsn,
+        job_name=settings_no_dsn.daily_job_name,
+        started_at=STARTED,
+        status="ok",
+        summary={"date": "2026-06-14", "events": 12, "note_path": "/v/x.md"},
+        connect=store.connect,
+    )
+    assert store.job_runs == []
+    assert store.connections_opened == 0  # returned before touching connect
