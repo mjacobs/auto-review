@@ -140,6 +140,18 @@ JOBS = [
     # 23:55 push + the */30 boundary at 00:00 must land the prior day's sessions
     # in the ~8 min before agent-review reads; the margin was trimmed from 21 min
     # when the chain was tightened, so watch this gap); claw feeds are low-activity.
+    # The renderer/producer-race catch-up (auto-review-hg6.11, OPTION 3). Fires
+    # ~10:00 PT and is GAP-GATED: it re-runs agent-review + the renderer for
+    # yesterday ONLY when ops.job_runs has no successful agent-review run
+    # covering that date (the transient-producer-failure → placeholder case;
+    # a quiet zero-session day still records an ok run, so it is NOT a gap).
+    # monitored=False is
+    # deliberate: a conditional job that legitimately no-ops on every healthy
+    # day has no fresh row/marker to check, so a liveness window would
+    # false-positive every quiet day. It's still catalogued here so the registry
+    # / moving-pieces doc reflects the whole stack (AGENTS.md). Do NOT give it a
+    # pg_job_name liveness path. See renderer/deploy/run-checkin-catchup.sh.
+    Job("check-in catch-up (hg6.11)", "auto-review LXC (.223)", "~10:00 PT daily (gap-gated; no-ops when no row missing)", "re-runs agent-review + renderer for yesterday on a producer gap; replaces the placeholder", False),
     Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
     Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
     Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),

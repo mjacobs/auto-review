@@ -36,6 +36,14 @@ ssh <cron-host> 'uv tool install --reinstall /tmp/checkin_renderer-*.whl && \
 # yesterday's window renders (DESIGN.md decision 4).
 51 0 * * *   . ~/.secrets && run-checkin-renderer-daily >> ~/.local/state/auto-review/cron.log 2>&1
 
+# midday catch-up (auto-review-hg6.11, OPTION 3): the producer→renderer-race
+# stopgap. Gap-gated — re-runs agent-review + the renderer for yesterday ONLY
+# when agent_review.daily_reports has no row for that date (clean no-op
+# otherwise), giving the LLM gateway ~10h to recover after the 00:08 producer.
+# Install the wrapper as ~/.local/bin/run-checkin-catchup (chmod +x). The
+# crontab is hand-maintained (AGENTS.md / docs/schedules.md) — add this by hand:
+0 10 * * *   . ~/.secrets && run-checkin-catchup >> ~/.local/state/auto-review/cron.log 2>&1
+
 # weekly (Phase 3 / step C — replaces vault-review's weekly cron):
 # 1 10 * * 1   . ~/.secrets && checkin-renderer run-weekly last-week …
 
