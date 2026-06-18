@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+import traceback
 
 import click
 from dateutil import parser as date_parser
@@ -11,6 +12,7 @@ from dateutil import parser as date_parser
 from .config import get_settings
 from .dossier import render_dossier
 from .gitdelta import collect_events
+from .runlog import record_best_effort, record_job_run
 from .vault import (
     read_daily_section,
     read_weekly_section,
@@ -108,25 +110,53 @@ def _run_one(
     do_print: bool,
 ) -> None:
     s = get_settings()
+    started_at = dt.datetime.now(tz=dt.UTC)
     click.echo(f"\n=== {date.isoformat()} ({s.tz_name}) ===", err=True)
 
-    start, end = day_date_range(date)
-    events = collect_events(s.vault_path, start, end)
-    click.echo(f"  {len(events)} events in window", err=True)
+    try:
+        start, end = day_date_range(date)
+        events = collect_events(s.vault_path, start, end)
+        click.echo(f"  {len(events)} events in window", err=True)
 
-    heading = f"vault-review — {date.isoformat()}"
-    window_label = date.isoformat()
-    section_md = render_dossier(s.vault_path, events, window_label, heading)
+        heading = f"vault-review — {date.isoformat()}"
+        window_label = date.isoformat()
+        section_md = render_dossier(s.vault_path, events, window_label, heading)
 
-    if do_print:
-        click.echo(section_md)
+        if do_print:
+            click.echo(section_md)
 
-    if dry_run:
-        click.echo("  --dry-run: not writing to vault.", err=True)
-        return
+        if dry_run:
+            click.echo("  --dry-run: not writing to vault, no job_runs row.", err=True)
+            return
 
-    path = write_daily_section(date, section_md)
-    click.echo(f"  wrote section → {path}", err=True)
+        path = write_daily_section(date, section_md)
+    except Exception as exc:
+        if not dry_run:
+            record_best_effort(
+                s,
+                job_name=s.daily_job_name,
+                started_at=started_at,
+                status="error",
+                summary={
+                    "date": date.isoformat(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "trace": traceback.format_exc(limit=5),
+                },
+            )
+        raise
+
+    record_job_run(
+        s,
+        job_name=s.daily_job_name,
+        started_at=started_at,
+        status="ok",
+        summary={
+            "date": date.isoformat(),
+            "events": len(events),
+            "note_path": str(path),
+        },
+    )
+    click.echo(f"  wrote section → {path}; job_runs row recorded.", err=True)
 
 
 # ─── run-weekly ──────────────────────────────────────────────────────────────
@@ -156,32 +186,60 @@ def _run_weekly_one(
     do_print: bool,
 ) -> None:
     s = get_settings()
+    started_at = dt.datetime.now(tz=dt.UTC)
     click.echo(f"\n=== {week_label} ({s.tz_name}) ===", err=True)
 
-    start, end = week_date_range(week_label)
-    events = collect_events(s.vault_path, start, end)
-    click.echo(f"  {len(events)} events in window", err=True)
+    try:
+        start, end = week_date_range(week_label)
+        events = collect_events(s.vault_path, start, end)
+        click.echo(f"  {len(events)} events in window", err=True)
 
-    heading = f"vault-review weekly — {week_label}"
-    window_label = f"7d ({week_label})"
-    section_md = render_dossier(s.vault_path, events, window_label, heading)
+        heading = f"vault-review weekly — {week_label}"
+        window_label = f"7d ({week_label})"
+        section_md = render_dossier(s.vault_path, events, window_label, heading)
 
-    # Append synthesis stub per vault-agent convention (ADR 006)
-    section_md = section_md.rstrip() + (
-        "\n\n## synthesis\n\n"
-        "_To be authored in a separate 1:1 review session over the dossier "
-        "above (see [[decisions/006-checkin-to-delta-recap]])._\n"
+        # Append synthesis stub per vault-agent convention (ADR 006)
+        section_md = section_md.rstrip() + (
+            "\n\n## synthesis\n\n"
+            "_To be authored in a separate 1:1 review session over the dossier "
+            "above (see [[decisions/006-checkin-to-delta-recap]])._\n"
+        )
+
+        if do_print:
+            click.echo(section_md)
+
+        if dry_run:
+            click.echo("  --dry-run: not writing to vault, no job_runs row.", err=True)
+            return
+
+        path = write_weekly_section(week_label, section_md)
+    except Exception as exc:
+        if not dry_run:
+            record_best_effort(
+                s,
+                job_name=s.weekly_job_name,
+                started_at=started_at,
+                status="error",
+                summary={
+                    "week_label": week_label,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "trace": traceback.format_exc(limit=5),
+                },
+            )
+        raise
+
+    record_job_run(
+        s,
+        job_name=s.weekly_job_name,
+        started_at=started_at,
+        status="ok",
+        summary={
+            "week_label": week_label,
+            "events": len(events),
+            "note_path": str(path),
+        },
     )
-
-    if do_print:
-        click.echo(section_md)
-
-    if dry_run:
-        click.echo("  --dry-run: not writing to vault.", err=True)
-        return
-
-    path = write_weekly_section(week_label, section_md)
-    click.echo(f"  wrote section → {path}", err=True)
+    click.echo(f"  wrote section → {path}; job_runs row recorded.", err=True)
 
 
 # ─── show / show-weekly ───────────────────────────────────────────────────────

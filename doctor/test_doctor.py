@@ -107,26 +107,22 @@ def test_section_info_daily_present_and_scoped_per_tool():
     assert m_present is True and m_lines == 1
 
 
-# ─── assess_jobs: full weekly path on a Monday ────────────────────────────────
+# ─── assess_jobs: vault-review is now PG-monitored (auto-review-2vv) ───────────
 
 
-def test_assess_jobs_weekly_present_on_monday():
-    # Monday 2026-05-25 → last-week = 2026-W21, the label WEEKLY_NOTE carries.
+def test_assess_jobs_vault_review_jobs_are_pg_monitored():
+    # vault-review daily AND weekly moved off the log+marker path onto ops.job_runs
+    # (auto-review-2vv). With no pg_runs (PG unreachable) both surface as PG
+    # degraded reports rather than marker/skipped reports. An old weekly commit
+    # line in the log is now irrelevant.
     monday = dt.date(2026, 5, 25)
     log = ["[main deadbee] vault-review: weekly recap 2026-05-25T17:01:01Z\n"]
-    reports = doctor.assess_jobs(log, monday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[])
-    weekly = next(r for r in reports if r.name == "vault-review weekly")
-    assert weekly.skipped_reason is None  # Monday → not skipped
-    assert weekly.fired is True
-    assert weekly.section_present is True
-    assert weekly.section_lines >= 3
-
-
-def test_assess_jobs_weekly_skipped_midweek():
-    thursday = dt.date(2026, 5, 28)
-    reports = doctor.assess_jobs([], thursday, yesterday_checkin_text="", weekly_text="", tracebacks=[])
-    weekly = next(r for r in reports if r.name == "vault-review weekly")
-    assert weekly.skipped_reason == "weekly — Mondays only"
+    reports = doctor.assess_jobs(log, monday, yesterday_checkin_text="", weekly_text="", tracebacks=[])
+    by_name = {r.name: r for r in reports}
+    for name in ("vault-review daily", "vault-review weekly"):
+        assert by_name[name].pg is True
+        assert by_name[name].pg_status == "degraded"  # pg_runs defaulted to None
+        assert by_name[name].skipped_reason is None   # no "Mondays only" skip anymore
 
 
 def test_find_tracebacks_empty():
@@ -148,7 +144,12 @@ def test_find_tracebacks_parses_real_traceback():
     assert tbs[0]["summary"] == "HTTPError: HTTP Error 500: Internal Server Error (client.py:45)"
 
 
-def test_assess_jobs_reports_crash():
+def test_vault_review_crash_surfaces_in_diagnostics():
+    # vault-review is now PG-monitored (auto-review-2vv), so a vault-review crash
+    # is no longer attributed per-job in the marker table — but it must still
+    # surface: find_tracebacks parses it (attributed to the vault-review tool) and
+    # render_section lists it in the "Tracebacks in log tail" diagnostics.
+    today = dt.date(2026, 5, 31)
     log = [
         "Traceback (most recent call last):\n",
         "  File \"/home/mj/.local/share/uv/tools/vault-review/lib/python3.13/site-packages/vault_review/gitdelta.py\", line 45, in collect\n",
@@ -156,11 +157,13 @@ def test_assess_jobs_reports_crash():
         "urllib.error.HTTPError: HTTP Error 500: Internal Server Error\n",
     ]
     tbs = doctor.find_tracebacks(log)
-    reports = doctor.assess_jobs(log, dt.date(2026, 5, 31), "", "", tbs)
-    vr = next(r for r in reports if r.name == "vault-review daily")
-    assert vr.fired is False
-    assert len(vr.tracebacks) == 1
-    assert "HTTPError" in vr.tracebacks[0]
+    assert len(tbs) == 1
+    assert tbs[0]["tool"] == "vault-review"
+    assert "HTTPError" in tbs[0]["summary"]
+    reports = doctor.assess_jobs(log, today, "", "", tbs)
+    out = doctor.render_section(today, reports, tbs, 0, (today - dt.timedelta(days=1), []))
+    assert "Tracebacks in log tail" in out
+    assert "vault-review" in out and "HTTPError" in out
 
 
 def test_section_info_agent_review_daily_present():
@@ -192,25 +195,10 @@ def test_assess_jobs_pg_writers_now_monitored():
     reports = doctor.assess_jobs(log, today, yesterday_checkin_text="", weekly_text="", tracebacks=[])
     by_name = {r.name: r for r in reports}
     assert "memex-review daily" not in by_name        # dissolved (hg6.4)
-    assert "vault-review daily" in by_name             # marker job, unaffected
+    assert "vault-review daily" in by_name             # now PG-monitored (2vv)
     for pg_name in ("agent-review daily", "check-in renderer daily", "memex-sync hourly"):
         assert by_name[pg_name].pg is True
         assert by_name[pg_name].pg_status == "degraded"  # pg_runs defaulted to None
-
-
-def test_assess_jobs_weekly_present_on_monday_with_reported_label():
-    # Tests that when we run on a Monday, the weekly section is looked up with
-    # the correct reported_week_label and weekly marker-key, and is found.
-    monday = dt.date(2026, 5, 25)
-    log = ["[main deadbee] vault-review: weekly recap 2026-05-25T17:01:01Z\n"]
-    reports = doctor.assess_jobs(
-        log, monday, yesterday_checkin_text="", weekly_text=WEEKLY_NOTE, tracebacks=[]
-    )
-    weekly = next(r for r in reports if r.name == "vault-review weekly")
-    assert weekly.skipped_reason is None
-    assert weekly.fired is True
-    assert weekly.section_present is True
-    assert weekly.section_lines >= 3
 
 
 # ─── self-liveness: the doctor monitoring its own missed runs (g52) ────────────
@@ -308,12 +296,13 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
 
 def test_registry_monitored_jobs_have_liveness_config():
     # Every monitored job carries EXACTLY ONE liveness config: the marker path
-    # (commit_regex + marker + hhmm — vault-review, doctor self) or the PG path
-    # (pg_job_name + interval — the job_runs writers, hg6.8). Unmonitored infra
-    # pretends to have neither.
+    # (commit_regex + marker + hhmm — now only the doctor self-row) or the PG path
+    # (pg_job_name + a window — the job_runs writers, hg6.8/2vv). The PG window is
+    # either a flat interval (daily) or the schedule-aware weekly check
+    # (pg_weekly). Unmonitored infra pretends to have neither.
     for j in doctor.JOBS:
         marker = bool(j.commit_regex and j.marker_tool and j.marker_key and j.hhmm)
-        pg = bool(j.pg_job_name and j.pg_interval_hours > 0)
+        pg = bool(j.pg_job_name and (j.pg_interval_hours > 0 or j.pg_weekly))
         if j.monitored:
             assert marker ^ pg, f"{j.name}: monitored needs exactly one of marker/PG config"
         else:
@@ -443,6 +432,116 @@ def test_render_section_pg_fresh_shows_status_and_cost():
     assert "$0.0500" in out
     assert "✓ ok" in out
     assert "| last run | latest result |" in out
+
+
+# ─── schedule-aware weekly liveness (auto-review-2vv; absorbs hg6.12 BUG2) ─────
+#
+# The weekly fires Mon 00:08 PT (= 07:08 UTC in PDT). The old marker+
+# reported_week_label path false-positived every Monday in the window BEFORE the
+# weekly fired but AFTER the doctor ran (hg6.12 BUG2). The PG check is schedule-
+# aware: overdue ONLY once the most-recent expected Monday fire (+grace) has
+# passed with no fresh row. These tests pin both the BUG2 non-regression and a
+# genuine miss.
+
+WEEKLY = "vault-review-weekly"
+
+
+def _weekly_report(pg_runs, today, now_utc):
+    reports = doctor.assess_jobs([], today, "", "", [], pg_runs=pg_runs, now_utc=now_utc)
+    return next(r for r in reports if r.name == "vault-review weekly")
+
+
+def test_most_recent_weekly_fire_picks_this_week_after_fire():
+    job = next(j for j in doctor.JOBS if j.pg_job_name == WEEKLY)
+    # Monday 2026-06-15 00:22 PT = 07:22 UTC — just after the 00:08 fire.
+    now = dt.datetime(2026, 6, 15, 7, 22, tzinfo=dt.timezone.utc)
+    fire = doctor.most_recent_weekly_fire(job, now)
+    # This Monday's 00:08 PT fire = 07:08 UTC.
+    assert fire == dt.datetime(2026, 6, 15, 7, 8, tzinfo=dt.timezone.utc)
+
+
+def test_most_recent_weekly_fire_picks_last_week_before_fire():
+    job = next(j for j in doctor.JOBS if j.pg_job_name == WEEKLY)
+    # Monday 2026-06-15 00:05 PT = 07:05 UTC — BEFORE the 00:08 fire.
+    now = dt.datetime(2026, 6, 15, 7, 5, tzinfo=dt.timezone.utc)
+    fire = doctor.most_recent_weekly_fire(job, now)
+    # Falls back to LAST Monday's fire (2026-06-08 00:08 PT = 07:08 UTC).
+    assert fire == dt.datetime(2026, 6, 8, 7, 8, tzinfo=dt.timezone.utc)
+
+
+def test_weekly_not_overdue_before_monday_fire_is_the_bug2_case():
+    # hg6.12 BUG2: a Monday morning BEFORE the weekly's 00:08 fire must NOT be
+    # flagged missing/overdue just because this week's row hasn't landed yet.
+    # The latest row is last Monday's normal run; the doctor runs at 00:05 PT.
+    monday = dt.date(2026, 6, 15)
+    now = dt.datetime(2026, 6, 15, 7, 5, tzinfo=dt.timezone.utc)  # 00:05 PT, pre-fire
+    last_week_run = dt.datetime(2026, 6, 8, 7, 9, tzinfo=dt.timezone.utc)  # last Mon 00:09 PT
+    runs = {WEEKLY: _runrow(WEEKLY, last_week_run)}
+    r = _weekly_report(runs, monday, now)
+    assert r.pg is True
+    assert r.fired is True          # FRESH — no BUG2 false-positive
+    assert r.pg_overdue is False
+    assert r.pg_status == "ok"
+
+
+def test_weekly_fresh_within_grace_even_before_row_lands():
+    # Monday, AT the fire minute, row hasn't been written yet but we're inside the
+    # grace deadline — still fresh (the run has time to land), not overdue.
+    monday = dt.date(2026, 6, 15)
+    now = dt.datetime(2026, 6, 15, 7, 22, tzinfo=dt.timezone.utc)  # 00:22 PT, post-fire
+    last_week_run = dt.datetime(2026, 6, 8, 7, 9, tzinfo=dt.timezone.utc)
+    runs = {WEEKLY: _runrow(WEEKLY, last_week_run)}
+    r = _weekly_report(runs, monday, now)
+    assert r.fired is True          # within fire+2h grace → not yet overdue
+    assert r.pg_overdue is False
+
+
+def test_weekly_fresh_when_this_weeks_run_landed():
+    # The healthy steady state: this Monday's run has landed; stays green all week.
+    wednesday = dt.date(2026, 6, 17)
+    now = dt.datetime(2026, 6, 17, 7, 22, tzinfo=dt.timezone.utc)  # Wed, mid-week
+    this_week_run = dt.datetime(2026, 6, 15, 7, 9, tzinfo=dt.timezone.utc)  # Mon 00:09 PT
+    runs = {WEEKLY: _runrow(WEEKLY, this_week_run)}
+    r = _weekly_report(runs, wednesday, now)
+    assert r.fired is True
+    assert r.pg_overdue is False
+
+
+def test_weekly_overdue_on_genuine_miss():
+    # A genuinely-missed weekly: it's Wednesday, well past Monday's fire+grace, and
+    # the latest row is from a PRIOR week (this Monday never ran). MUST be overdue —
+    # the schedule-aware check does NOT stay green for ~8 days off a stale run.
+    wednesday = dt.date(2026, 6, 17)
+    now = dt.datetime(2026, 6, 17, 7, 22, tzinfo=dt.timezone.utc)
+    stale_run = dt.datetime(2026, 6, 8, 7, 9, tzinfo=dt.timezone.utc)  # last week's run
+    runs = {WEEKLY: _runrow(WEEKLY, stale_run)}
+    r = _weekly_report(runs, wednesday, now)
+    assert r.fired is False
+    assert r.pg_overdue is True
+    assert r.fired_at_pt == "(2026-06-08)"  # shows the last real run's date
+
+
+def test_weekly_overdue_right_after_fire_grace_with_no_fresh_row():
+    # Monday, just AFTER fire+grace (00:08 + 2h = 02:08 PT), and no fresh row this
+    # week — the run missed its window. Overdue (the per-week miss signal).
+    monday = dt.date(2026, 6, 15)
+    now = dt.datetime(2026, 6, 15, 9, 30, tzinfo=dt.timezone.utc)  # 02:30 PT, past grace
+    stale_run = dt.datetime(2026, 6, 8, 7, 9, tzinfo=dt.timezone.utc)
+    runs = {WEEKLY: _runrow(WEEKLY, stale_run)}
+    r = _weekly_report(runs, monday, now)
+    assert r.fired is False
+    assert r.pg_overdue is True
+
+
+def test_weekly_degraded_and_never_ran():
+    monday = dt.date(2026, 6, 15)
+    now = dt.datetime(2026, 6, 15, 7, 22, tzinfo=dt.timezone.utc)
+    # PG unreachable → degraded
+    degraded = _weekly_report(None, monday, now)
+    assert degraded.pg_status == "degraded" and degraded.fired is False
+    # No row ever → never
+    never = _weekly_report({}, monday, now)
+    assert never.fired is False and never.fired_at_pt is None and never.pg_status is None
 
 
 if __name__ == "__main__":

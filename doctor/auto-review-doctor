@@ -79,6 +79,17 @@ class Job:
     # row younger than pg_interval_hours?" instead of log+marker.
     pg_job_name: str = ""
     pg_interval_hours: float = 0.0
+    # PG WEEKLY path (auto-review-2vv): a weekly cron's liveness can't use a flat
+    # age window (a real miss would stay green for ~8 days; a tight window would
+    # false-positive every Monday before the fire — the hg6.12 BUG2 shape).
+    # Instead the doctor compares the latest row against the most-recent EXPECTED
+    # weekly fire: overdue only once that fire-time + grace has passed without a
+    # fresh row. pg_weekly_dow/hhmm pin the schedule (PT); pg_grace_hours is the
+    # post-fire slack before flagging.
+    pg_weekly: bool = False
+    pg_weekly_dow: int = 0          # Monday (matches dt.date.weekday())
+    pg_weekly_hhmm: str = "00:08"   # expected fire time PT
+    pg_grace_hours: float = 2.0     # slack after the expected fire before "overdue"
 
 
 # The canonical registry. Monitored crons first, then catalogued-but-unmonitored
@@ -86,36 +97,43 @@ class Job:
 # both checks liveness AND regenerates reference/auto-review/moving-pieces.md
 # from it, so a stale row here is a stale dashboard there.
 JOBS = [
-    Job("vault-review daily", "auto-review LXC (.223)", "00:01 PT daily", "check-in § (daily recap)", True,
-        hhmm="00:01", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: daily recap (\S+Z)"),
-        marker_tool="vault-review", marker_key="daily"),
     # memex-review DISSOLVED 2026-06-13 (hg6.4): the renderer emits the memex
     # section from memex.captures; the tool, its 00:11 cron, and its marker are
     # gone. agent-review went --no-vault the same day (hg6.6): it writes only a
     # PG row, so it has no commit line or marker to monitor here — it and the
-    # renderer are now PG-monitored (job_runs liveness, below).
+    # renderer are PG-monitored (job_runs liveness, below). vault-review moved to
+    # PG liveness 2026-06-17 (auto-review-2vv) — see the PG block below; the only
+    # remaining marker job is the doctor's own self-row.
     Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:22 PT daily", "check-in § (health)", True,
         hhmm="00:22", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
-    Job("vault-review weekly", "auto-review LXC (.223)", "Mon 00:08 PT", "weekly § (weekly recap)", True,
-        hhmm="00:08", commit_regex=re.compile(r"\[main [0-9a-f]+\] vault-review: weekly recap (\S+Z)"),
-        marker_tool="vault-review", marker_key="weekly", is_weekly=True),
     # ── PG-monitored: liveness = a fresh ops.job_runs row, not log+marker ──────
     # The PG-row writers (ADR 002). Each appends an ops.job_runs row per run, so
     # the doctor checks "latest row younger than pg_interval_hours?" (hg6.8). The
     # doctor runs 00:22 PT — LAST in the tightened nightly cluster, after
-    # agent-review (00:08) and the renderer (00:19) — so on a normal night it
-    # reads TODAY's minutes-old rows. The 26h window is kept anyway: it tolerates
-    # a slow/in-flight nightly run that finishes after the doctor (falling back to
-    # yesterday's ~24h-old row) while still flagging a job dead a full day.
-    # memex-sync is hourly (2h window). A crashed run writes no row and goes
-    # overdue; an 'error' row surfaces a handled failure. See docs/schedules.md.
+    # vault-review daily (00:01), agent-review (00:08) and the renderer (00:19) —
+    # so on a normal night it reads TODAY's minutes-old rows. The 26h window is
+    # kept anyway: it tolerates a slow/in-flight nightly run that finishes after
+    # the doctor (falling back to yesterday's ~24h-old row) while still flagging a
+    # job dead a full day. memex-sync is hourly (2h window). A crashed run writes
+    # no row and goes overdue; an 'error' row surfaces a handled failure. See
+    # docs/schedules.md.
     Job("memex-sync hourly", "auto-review LXC (.223)", ":05 hourly", "memex PG schema (captures/triage-seed/watermark)", True,
         pg_job_name="memex-sync", pg_interval_hours=2),
     Job("agent-review daily", "auto-review LXC (.223)", "00:08 PT daily", "agent_review PG schema (daily report row; --no-vault)", True,
         pg_job_name="agent-review", pg_interval_hours=26),
     Job("check-in renderer daily", "auto-review LXC (.223)", "00:19 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
         pg_job_name="checkin-renderer-daily", pg_interval_hours=26),
+    Job("vault-review daily", "auto-review LXC (.223)", "00:01 PT daily", "check-in § (daily recap, git-diff) + ops.job_runs", True,
+        pg_job_name="vault-review-daily", pg_interval_hours=26),
+    # SCHEDULE-AWARE weekly (auto-review-2vv): not a flat age window. The weekly
+    # fires Mon 00:08 PT and the doctor runs 00:22 PT, so on Monday the freshest
+    # row is ~14 min old. The check is overdue ONLY once the most-recent expected
+    # Monday fire (+grace) has passed without a fresh row — green the rest of the
+    # week off one real run, and NOT a false-positive in the pre-fire Monday
+    # window (the hg6.12 BUG2 the old marker+reported_week_label path produced).
+    Job("vault-review weekly", "auto-review LXC (.223)", "Mon 00:08 PT weekly", "weekly § (weekly recap, git-diff) + ops.job_runs", True,
+        pg_job_name="vault-review-weekly", pg_weekly=True, pg_weekly_dow=0, pg_weekly_hhmm="00:08", pg_grace_hours=2.0),
     # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
     # agent-review's upstream data feed: pushes session data into agentsview PG,
     # which agent-review reads at 00:08. The baox push is timing-critical (the
@@ -243,6 +261,68 @@ def assess_pg_job(
         return JobReport(fired=False, fired_at_pt=None, pg_status=None, **base)
     age_h = (now_utc - row.finished_at).total_seconds() / 3600.0
     fresh = age_h <= job.pg_interval_hours
+    ts_pt = row.finished_at.astimezone(PT)
+    fired_at = ts_pt.strftime("%H:%M") if ts_pt.date() == today_pt else f"({ts_pt.date().isoformat()})"
+    cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else None
+    return JobReport(
+        fired=fresh, fired_at_pt=fired_at, pg_status=row.status,
+        pg_cost=cost, pg_overdue=not fresh, **base,
+    )
+
+
+def most_recent_weekly_fire(job: Job, now_utc: dt.datetime) -> dt.datetime:
+    """The most-recent EXPECTED weekly fire (UTC) at-or-before ``now_utc``.
+
+    The weekly cron fires at ``pg_weekly_hhmm`` PT on ``pg_weekly_dow`` (Monday).
+    We compute the fire instant in PT, then convert to UTC for comparison with
+    the row's (UTC) finished_at. "At-or-before now" so that AFTER this week's fire
+    has passed we measure against THIS week's expected run, and before it we
+    measure against LAST week's — which is what makes the check both per-week
+    (a real miss surfaces) and free of the pre-fire-Monday false-positive.
+    """
+    hh, mm = (int(x) for x in job.pg_weekly_hhmm.split(":"))
+    now_pt = now_utc.astimezone(PT)
+    # Walk back to the most recent scheduled weekday at hh:mm that is <= now_pt.
+    days_since_dow = (now_pt.weekday() - job.pg_weekly_dow) % 7
+    fire_date = now_pt.date() - dt.timedelta(days=days_since_dow)
+    fire_pt = dt.datetime.combine(fire_date, dt.time(hh, mm), tzinfo=PT)
+    if fire_pt > now_pt:
+        # Today IS the scheduled day but we're before the fire time → last week's.
+        fire_pt -= dt.timedelta(weeks=1)
+    return fire_pt.astimezone(UTC)
+
+
+def assess_pg_weekly_job(
+    job: Job, today_pt: dt.date, pg_runs: dict[str, RunRow] | None, now_utc: dt.datetime
+) -> JobReport:
+    """Schedule-aware liveness for a weekly PG job (auto-review-2vv).
+
+    A flat age window can't express a weekly cadence: an 8-day window stays green
+    for ~8 days after a real miss, and a tight window false-positives every Monday
+    before the fire (the hg6.12 BUG2). Instead: the job is FRESH unless the
+    most-recent expected Monday fire (+grace) has passed without a row finishing
+    at-or-after that fire. So:
+      * before this Monday's fire → measured against LAST week's fire, which a
+        normal run already satisfied → green (no BUG2 false-positive);
+      * after the fire+grace with no fresh row → overdue (a real miss surfaces,
+        and stays surfaced for the whole week, not silently self-clearing).
+    """
+    base = dict(
+        name=job.name, expected_hhmm=job.cadence, section_present=None,
+        section_lines=None, section_note="", skipped_reason=None, pg=True,
+    )
+    if pg_runs is None:
+        return JobReport(fired=False, fired_at_pt=None, pg_status="degraded", **base)
+    row = pg_runs.get(job.pg_job_name)
+    if row is None:
+        return JobReport(fired=False, fired_at_pt=None, pg_status=None, **base)
+
+    expected_fire = most_recent_weekly_fire(job, now_utc)
+    deadline = expected_fire + dt.timedelta(hours=job.pg_grace_hours)
+    # Fresh if the latest row covers the most-recent expected fire, OR we haven't
+    # yet reached that fire's grace deadline (the run still has time to land).
+    fresh = row.finished_at >= expected_fire or now_utc < deadline
+
     ts_pt = row.finished_at.astimezone(PT)
     fired_at = ts_pt.strftime("%H:%M") if ts_pt.date() == today_pt else f"({ts_pt.date().isoformat()})"
     cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else None
@@ -383,28 +463,23 @@ def assess_jobs(
     pg_runs: dict[str, RunRow] | None = None,
     now_utc: dt.datetime | None = None,
 ) -> list[JobReport]:
-    is_monday = today_pt.weekday() == 0
     now_utc = now_utc or dt.datetime.now(UTC)
     reports: list[JobReport] = []
     for job in JOBS:
         if not job.monitored:
             continue  # catalogued infra; liveness not checked (see moving-pieces doc)
         if job.pg_job_name:
-            # PG-monitored: liveness is a fresh ops.job_runs row (hg6.8), not
-            # log+marker. pg_runs is None when PG is unreachable (degraded).
-            reports.append(assess_pg_job(job, today_pt, pg_runs, now_utc))
+            # PG-monitored: liveness is a fresh ops.job_runs row (hg6.8). The
+            # weekly variant (auto-review-2vv) is schedule-aware rather than a flat
+            # age window. pg_runs is None when PG is unreachable (degraded).
+            if job.pg_weekly:
+                reports.append(assess_pg_weekly_job(job, today_pt, pg_runs, now_utc))
+            else:
+                reports.append(assess_pg_job(job, today_pt, pg_runs, now_utc))
             continue
         name, hhmm, regex, sibling_tool, is_weekly, marker_key = (
             job.name, job.hhmm, job.commit_regex, job.marker_tool, job.is_weekly, job.marker_key,
         )
-        if is_weekly and not is_monday:
-            reports.append(JobReport(
-                name=name, expected_hhmm=hhmm, fired=False, fired_at_pt=None,
-                section_present=None, section_lines=None, section_note="",
-                skipped_reason="weekly — Mondays only",
-                tracebacks=[],
-            ))
-            continue
         if sibling_tool == "auto-review-doctor":
             # Self-row. We can't see our own commit in the log yet (it happens
             # after this script exits, in the cron wrapper), so "fired" reflects
