@@ -9,8 +9,23 @@
 # from the user crontab. PATH must include the directory holding the
 # uv-tool-installed `vault-review` binary (commonly ~/.local/bin or
 # /home/linuxbrew/.linuxbrew/bin).
+#
+# Required env (sourced from ~/.secrets if present):
+#   VAULT_REVIEW_PG_DSN  postgresql://vault_review_job@<pg-host>:5432/<db>
+#                        (password may instead come from ~/.pgpass). Records the
+#                        ops.job_runs liveness row (auto-review-2vv). Dedicated
+#                        var because ~/.secrets PG_DSN on the cron host belongs
+#                        to the agent_review role. Mirrors the renderer wrapper
+#                        fix in fac6bba.
 
 set -euo pipefail
+
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+# Load the PG DSN. Cron starts with a minimal environment.
+[[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
+
+: "${VAULT_REVIEW_PG_DSN:?VAULT_REVIEW_PG_DSN must be set (provision ~/.secrets on this host)}"
 
 VAULT="${VAULT_PATH:-$HOME/vault}"
 

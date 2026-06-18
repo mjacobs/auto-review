@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 # Weekly recap cron wrapper. See run-recap-daily.sh for the model.
+#
+# Required env (sourced from ~/.secrets if present):
+#   VAULT_REVIEW_PG_DSN  postgresql://vault_review_job@<pg-host>:5432/<db>
+#                        (records the ops.job_runs liveness row — auto-review-2vv;
+#                        mirrors the renderer wrapper fix in fac6bba).
 
 set -euo pipefail
+
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+# Load the PG DSN. Cron starts with a minimal environment.
+[[ -f "$HOME/.secrets" ]] && source "$HOME/.secrets"
+
+: "${VAULT_REVIEW_PG_DSN:?VAULT_REVIEW_PG_DSN must be set (provision ~/.secrets on this host)}"
 
 VAULT="${VAULT_PATH:-$HOME/vault}"
 
