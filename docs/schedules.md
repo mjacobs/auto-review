@@ -24,6 +24,7 @@ is when it's generated.
 | `run-agent-review-daily` | `8 0 * * *` | `D 00:00:00 → D+1 00:00:00` | `D+1 00:08` | `agent_review.daily_reports[D]` (PG) | ✗ (`--no-vault`) |
 | `run-checkin-renderer-daily` | `19 0 * * *` | composes note `D` from PG rows for `D` | `D+1 00:19` | note `D` + `ops.job_runs` | ✔ |
 | `run-auto-review-doctor` | `22 0 * * *` | liveness snapshot (no data window) | `D+1 00:22` | note `D+1` (own §); assesses `D` | ✔ |
+| `run-checkin-catchup` | `0 10 * * *` | re-composes note `D` IFF a producer row is missing | `D+1 10:00` | note `D` (only on a gap) | ✔ (only on a gap) |
 
 Run order on the `D+1` morning:
 
@@ -33,7 +34,24 @@ Run order on the `D+1` morning:
 00:08  agent-review  ∥  vault-review weekly (Mon)     (agent: ≥8 min after the agentsview push)
 00:19  check-in renderer                             (~11 min after agent-review)
 00:22  doctor                                        (LAST — sees everything above)
+…
+10:00  check-in catch-up (hg6.11)                    (gap-gated backfill; no-op on a healthy night)
 ```
+
+The `10:00` slot is the producer→consumer-race **catch-up** (`auto-review-hg6.11`,
+OPTION 3), the back half of buffer #2 below. It sits ~10 h after the `00:08`
+producer run so a transient LLM-gateway/DB blip has had time to clear. It is
+**gap-gated**: it probes Postgres read-only for `agent_review.daily_reports[D]`
+and re-runs `agent-review run D --no-vault` + `checkin-renderer run D` (both
+idempotent — the re-run cleanly REPLACES the placeholder) **only when that row
+is missing**. On a healthy night the row is present, so it logs `no backfill
+needed for D` and exits 0 — a clean no-op. Because it legitimately no-ops on most
+days it is **catalogued `monitored=False`** in the doctor's `JOBS` registry (a
+liveness window would false-positive every quiet day; see
+`doctor/auto-review-doctor`). v0 covers the `agent-review` producer only — the
+documented incident; the same placeholder reproduces for the vault/memex
+sections on a pre-render blip, and broadening the catch-up to them is a
+follow-up.
 
 ## Dependency graph
 
@@ -62,7 +80,14 @@ arbitrary:
    (`_no agent-review report row for D_`). This is the producer→consumer race —
    `auto-review-hg6.11`. Same health-threshold logic: a run nearing 11 min is
    *broken* (LLM-gateway retry storm), and the fix is `hg6.11`'s catch-up, not a
-   wider cushion.
+   wider cushion. **The catch-up (`run-checkin-catchup`, `0 10 * * *`) is the
+   implemented stopgap (OPTION 3):** a transient producer failure bakes a
+   permanent placeholder into note `D` (nothing re-runs), so the `10:00` job
+   re-runs the producer + renderer for `D` *only when its PG row is missing* —
+   giving the gateway ~10 h to recover after the `00:08` run. It's gap-gated and
+   idempotent, so it's a clean no-op on every healthy night (hence
+   `monitored=False` in the doctor registry). See the `10:00` entry above and
+   `renderer/deploy/run-checkin-catchup.sh`.
 3. **`doctor` runs last** (soft, liveness). It judges the others' freshness
    (`ops.job_runs` + section markers), so it must run after them — including the
    weekly, which is why the weekly sits at `00:08` (before the `00:22` doctor)
@@ -146,7 +171,10 @@ the doctor so the dashboard/display match.
 ## Related issues
 
 - `auto-review-hg6.11` — renderer/producer race window (the `agent → renderer`
-  gap); needs auto-backfill so a transient producer failure self-heals.
+  gap); a transient producer failure bakes a permanent placeholder. The `10:00`
+  gap-gated catch-up (`run-checkin-catchup`, OPTION 3) is the implemented
+  stopgap; a fuller doctor-driven / wrapper-retry self-heal (and broadening past
+  the agent-review producer) remains follow-up.
 - `auto-review-hg6.12` — doctor weekly false-positive. The **scheduling half**
   (doctor now runs last, weekly folded into the Monday cluster before it) is
   addressed by this layout; the **liveness half** folds into `auto-review-2vv`.
