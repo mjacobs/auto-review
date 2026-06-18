@@ -16,6 +16,18 @@ a separate, human-drained inbox note.
 | `agent-review` | `agentsview` Postgres | LLM-synthesized daily report → `agent_review` PG schema (`--no-vault`); the renderer emits the check-in section |
 | `vault-review` | vault git history | deterministic delta recap (check-in section) |
 | `memex-triage` | `serverless-memex` `/thoughts?since=<seq>` feed | exactly-once delivery into `inbox/memex.md` (rolling, action-framed) |
+| `memex-triage-cli` | `memex` PG schema (`captures` + `capture_triage`) | terminal-native triage: `list` the inbox + `file`/`discard`/`reset` flip PG-owned triage state (`auto-review-hg6.9`) |
+
+> **`memex-triage-cli` is the triage surface** for the ADR-002 substrate
+> (`auto-review-hg6.9`): the prototype that replaces checking boxes in
+> `inbox/memex.md`. It reads the `memex-sync` captures mirror and flips
+> `memex.capture_triage` state via the `memex_triage` role (SELECT on both
+> tables, `UPDATE(state, updated_at)` on `capture_triage`, **no INSERT/DELETE** —
+> rows are seeded 'untriaged' by `memex-sync`, so a flip always targets an
+> existing row). It is a sibling but NOT vault-shaped — like `memex-sync` it
+> touches no files and runs no cron; it is the human's read/write seam into PG.
+> Don't confuse it with the desktop `memex-triage` timer above (D1 feed →
+> `inbox/memex.md`).
 
 > **`memex-review` was dissolved 2026-06-13** (ADR 002 / beads `auto-review-hg6.4`).
 > It is no longer a tool: `memex-sync` mirrors captures `serverless-memex` (D1)
@@ -55,6 +67,14 @@ When adding or modifying a sibling, mirror `vault-review/`'s layout exactly:
 Each section in the check-in note is marker-bracketed
 (`<!-- <tool>:daily=YYYY-MM-DD generated_at=… -->`) so re-runs are
 strip-and-replace; human edits outside the marker survive.
+
+The PG-only siblings (`memex-sync`, `memex-triage-cli`) skip the vault-shaped
+files — no `<source>.py`/`dossier.py`/`vault.py`, no `deploy/` wrapper. Mirror
+`memex-sync/`'s layout instead: `config.py` (pydantic-settings; a `PG_DSN`
+alias, no `VAULT_PATH`), `db.py` (the role-agnostic pgpass/DSN helper, copied
+verbatim), `queries.py` (module-level SQL constants the test fakes dispatch on),
+`cli.py`. Tests use the in-memory fake-connection pattern
+(`tests/conftest.py`) — never a live DSN.
 
 ### Deployment pattern
 
