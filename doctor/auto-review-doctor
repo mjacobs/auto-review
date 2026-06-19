@@ -104,27 +104,27 @@ JOBS = [
     # renderer are PG-monitored (job_runs liveness, below). vault-review moved to
     # PG liveness 2026-06-17 (auto-review-2vv) — see the PG block below; the only
     # remaining marker job is the doctor's own self-row.
-    Job("auto-review-doctor daily", "auto-review LXC (.223)", "00:22 PT daily", "check-in § (health)", True,
+    Job("auto-review-doctor daily", "auto-review LXC (.223)", "via run-checkin-nightly (last phase)", "check-in § (health)", True,
         hhmm="00:22", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
     # ── PG-monitored: liveness = a fresh ops.job_runs row, not log+marker ──────
     # The PG-row writers (ADR 002). Each appends an ops.job_runs row per run, so
-    # the doctor checks "latest row younger than pg_interval_hours?" (hg6.8). The
-    # doctor runs 00:22 PT — LAST in the tightened nightly cluster, after
-    # vault-review daily (00:01), agent-review (00:08) and the renderer (00:19) —
-    # so on a normal night it reads TODAY's minutes-old rows. The 26h window is
-    # kept anyway: it tolerates a slow/in-flight nightly run that finishes after
-    # the doctor (falling back to yesterday's ~24h-old row) while still flagging a
-    # job dead a full day. memex-sync is hourly (2h window). A crashed run writes
-    # no row and goes overdue; an 'error' row surfaces a handled failure. See
-    # docs/schedules.md.
+    # the doctor checks "latest row younger than pg_interval_hours?" (hg6.8).
+    # Since OMG-002 these run as ordered phases of run-checkin-nightly with the
+    # doctor LAST, so it always reads TODAY's just-written rows — the ordering is
+    # structural now, not a timing guess against fixed offsets. The 26h window is
+    # kept anyway: it tolerates a slow/in-flight nightly run (e.g. a phase that
+    # timed out and the driver moved on) — falling back to yesterday's ~24h-old
+    # row — while still flagging a job dead a full day. memex-sync is hourly (2h
+    # window). A crashed run writes no row and goes overdue; an 'error' row
+    # surfaces a handled failure. See docs/schedules.md.
     Job("memex-sync hourly", "auto-review LXC (.223)", ":05 hourly", "memex PG schema (captures/triage-seed/watermark)", True,
         pg_job_name="memex-sync", pg_interval_hours=2),
-    Job("agent-review daily", "auto-review LXC (.223)", "00:08 PT daily", "agent_review PG schema (daily report row; --no-vault)", True,
+    Job("agent-review daily", "auto-review LXC (.223)", "via run-checkin-nightly (~00:08 PT)", "agent_review PG schema (daily report row; --no-vault)", True,
         pg_job_name="agent-review", pg_interval_hours=26),
-    Job("check-in renderer daily", "auto-review LXC (.223)", "00:19 PT daily", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
+    Job("check-in renderer daily", "auto-review LXC (.223)", "via run-checkin-nightly (after agent-review)", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
         pg_job_name="checkin-renderer-daily", pg_interval_hours=26),
-    Job("vault-review daily", "auto-review LXC (.223)", "00:01 PT daily", "check-in § (daily recap, git-diff) + ops.job_runs", True,
+    Job("vault-review daily", "auto-review LXC (.223)", "via run-checkin-nightly (first phase)", "check-in § (daily recap, git-diff) + ops.job_runs", True,
         pg_job_name="vault-review-daily", pg_interval_hours=26),
     # SCHEDULE-AWARE weekly (auto-review-2vv): not a flat age window. The weekly
     # fires Mon 00:08 PT and the doctor runs 00:22 PT, so on Monday the freshest
@@ -132,9 +132,16 @@ JOBS = [
     # Monday fire (+grace) has passed without a fresh row — green the rest of the
     # week off one real run, and NOT a false-positive in the pre-fire Monday
     # window (the hg6.12 BUG2 the old marker+reported_week_label path produced).
-    Job("vault-review weekly", "auto-review LXC (.223)", "Mon 00:08 PT weekly", "weekly § (weekly recap, git-diff) + ops.job_runs", True,
+    Job("vault-review weekly", "auto-review LXC (.223)", "via run-checkin-nightly Mondays (~00:08 PT)", "weekly § (weekly recap, git-diff) + ops.job_runs", True,
         pg_job_name="vault-review-weekly", pg_weekly=True, pg_weekly_dow=0, pg_weekly_hhmm="00:08", pg_grace_hours=2.0),
     # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
+    # The single ordered nightly driver (OMG-002 / auto-review-bhp). Runs the
+    # five daily phases above IN ORDER, each timeout-bounded, with the doctor
+    # LAST. monitored=False: it writes no ops.job_runs row of its own — if it
+    # dies, its phases write no rows and go overdue under their own liveness
+    # above, so it needs no separate check. Catalogued so the moving-pieces doc
+    # lists it. The 10:00 catch-up below remains a failure-only backstop.
+    Job("run-checkin-nightly (OMG-002)", "auto-review LXC (.223)", "00:08 PT daily (single ordered driver)", "drives vault-daily→[weekly]→agent-review→memex-sync→renderer→doctor, timeout-bounded", False),
     # agent-review's upstream data feed: pushes session data into agentsview PG,
     # which agent-review reads at 00:08. The baox push is timing-critical (the
     # 23:55 push + the */30 boundary at 00:00 must land the prior day's sessions

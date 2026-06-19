@@ -11,32 +11,61 @@ doctor's liveness display and regenerates `reference/auto-review/moving-pieces.m
 
 ## The nightly chain
 
-Every daily job reports on **yesterday** (`D`) and runs in a tight cluster just
-after midnight on `D+1`. `t_a → t_b` is the data window a report covers; `t_r`
-is when it's generated.
+Every daily job reports on **yesterday** (`D`). Since OMG-002 (2026-06-19) the
+nightly jobs run as ORDERED PHASES of a single driver, `run-checkin-nightly`
+(`scripts/run-checkin-nightly.sh`), invoked by ONE crontab line at `8 0 * * *`
+PT. Each phase runs to completion before the next begins, so the renderer runs
+because the producer FINISHED — not because a fixed clock offset guessed it
+would be done (the race that broke the 06-18 note; `auto-review-bhp`, OMG-002).
+`t_a → t_b` is the data window a report covers.
 
-| Job | cron (PT) | covers `t_a → t_b` | `t_r` | writes | git push |
-|---|---|---|---|:--:|:--:|
-| `vault-sync-pull` | `*/5 * * * *` | — (ff-pull of vault) | continuous | vault tree | pull only |
-| `run-recap-daily` (vault-review) | `1 0 * * *` | `D 00:00:00 → D 23:59:59` | `D+1 00:01` | note `D` | ✔ |
-| `run-memex-sync` | `5 * * * *` | — (hourly capture mirror) | `:05` each hr | captures (PG) | ✗ |
-| `run-recap-weekly` | `8 0 * * 1` | `Mon 00:00 → next Mon 00:00` (Mon–Sun = week `W`) | `Mon-after-W 00:08` | weekly note `YYYY-W##` | ✔ |
-| `run-agent-review-daily` | `8 0 * * *` | `D 00:00:00 → D+1 00:00:00` | `D+1 00:08` | `agent_review.daily_reports[D]` (PG) | ✗ (`--no-vault`) |
-| `run-checkin-renderer-daily` | `19 0 * * *` | composes note `D` from PG rows for `D` | `D+1 00:19` | note `D` + `ops.job_runs` | ✔ |
-| `run-auto-review-doctor` | `22 0 * * *` | liveness snapshot (no data window) | `D+1 00:22` | note `D+1` (own §); assesses `D` | ✔ |
-| `run-checkin-catchup` | `0 10 * * *` | re-composes note `D` IFF a producer row is missing | `D+1 10:00` | note `D` (only on a gap) | ✔ (only on a gap) |
+> **Rollout status (2026-06-19):** the driver is committed
+> (`scripts/run-checkin-nightly.sh`); deploying it to `.223:~/.local/bin` and
+> the crontab cutover — replacing the five staggered lines with the one driver
+> line — are the remaining gated steps. Until the cutover lands, the box still
+> runs the prior staggered layout.
 
-Run order on the `D+1` morning:
+| Phase (in order) | wrapper | covers `t_a → t_b` | writes | push |
+|---|---|---|---|:--:|
+| 1. vault-review daily | `run-recap-daily` | `D 00:00:00 → D 23:59:59` | note `D` § | ✔ |
+| 2. vault-review weekly (Mondays) | `run-recap-weekly` | week `W` (Mon–Sun) | weekly note | ✔ |
+| 3. agent-review (producer) | `run-agent-review-daily` | `D 00:00 → D+1 00:00` | `agent_review.daily_reports[D]` (PG) | ✗ (`--no-vault`) |
+| 4. memex-sync | `run-memex-sync` | — (capture mirror; freshen) | captures (PG) | ✗ |
+| 5. check-in renderer | `run-checkin-renderer-daily` | composes note `D` from PG | note `D` bracket + `ops.job_runs` | ✔ |
+| 6. doctor (LAST) | `run-auto-review-doctor` | liveness snapshot | note `D+1` (own §); assesses `D` | ✔ |
+
+Each phase is `timeout`-bounded and NON-FATAL: a failed/timed-out phase is
+logged and skipped so the renderer still writes a (visible) placeholder and the
+doctor still reports — a partial note beats no note.
+
+Still on their own crontab lines (independent of the driver):
+
+| Job | cron (PT) | role |
+|---|---|---|
+| `vault-sync-pull` | `*/5 * * * *` | ff-pull the vault tree |
+| `run-memex-sync` | `5 * * * *` | hourly capture mirror (driver also runs it as phase 4 to freshen) |
+| `run-checkin-catchup` | `0 10 * * *` | failure-only backstop (`auto-review-8vo` will thin it) |
+
+Run order on the `D+1` morning — now a wait-chain, not timed offsets:
 
 ```
-00:01  vault-review daily                            (independent; reads vault git)
-00:05  memex-sync                                    (stragglers in before render)
-00:08  agent-review  ∥  vault-review weekly (Mon)     (agent: ≥8 min after the agentsview push)
-00:19  check-in renderer                             (~11 min after agent-review)
-00:22  doctor                                        (LAST — sees everything above)
+00:08  run-checkin-nightly starts (preserves the ~8-min margin after the
+       agentsview push — the one edge a local wait can't block on):
+         1. vault-review daily        ──┐ each phase runs to completion
+         2. vault-review weekly (Mon)   │ before the next begins; the
+         3. agent-review (producer)     │ renderer (5) therefore reads a
+         4. memex-sync                  │ COMPLETE daily_reports[D] row,
+         5. check-in renderer           │ never a missing one.
+         6. doctor (LAST)             ──┘ sees every row written above.
 …
-10:00  check-in catch-up (hg6.11)                    (gap-gated backfill; no-op on a healthy night)
+10:00  check-in catch-up (hg6.11)   (failure-only backstop; mostly redundant now)
 ```
+
+> **Since OMG-002 (2026-06-19) the producer→renderer race is eliminated by the
+> `run-checkin-nightly` wait-chain** — the renderer is a phase that runs only
+> after the producer phase completes — so this catch-up is now a **failure-only
+> backstop** (`auto-review-8vo` tracks thinning/retiring it). The description
+> below is the pre-orchestrator rationale.
 
 The `10:00` slot is the producer→consumer-race **catch-up** (`auto-review-hg6.11`,
 OPTION 3), the back half of buffer #2 below. It sits ~10 h after the `00:08`
@@ -75,12 +104,15 @@ arbitrary:
    incomplete (and it won't re-run). This buffer was 21 min pre-tightening;
    trimmed to ~8. **Treat as a health threshold:** if the push isn't done in
    8 min, fix the push — don't widen the gap. ⚠ external-host dependency.
-2. **`agent-review` + `memex-sync` → `renderer` (~11 min, hard/data.)** The
-   renderer reads their PG rows; if it runs first it renders a placeholder
+2. **`agent-review` + `memex-sync` → `renderer` (hard/data).** The renderer
+   reads their PG rows; if it runs first it renders a placeholder
    (`_no agent-review report row for D_`). This is the producer→consumer race —
-   `auto-review-hg6.11`. Same health-threshold logic: a run nearing 11 min is
-   *broken* (LLM-gateway retry storm), and the fix is `hg6.11`'s catch-up, not a
-   wider cushion. **The catch-up (`run-checkin-catchup`, `0 10 * * *`) is the
+   `auto-review-hg6.11`, which **bit the 06-18 note (OMG-002)** when the slow
+   `claude -p` haiku digest outran the fixed 11-min offset. **Resolved
+   structurally by `run-checkin-nightly`:** the renderer is a *phase after* the
+   producer, so the ordering is a wait, not a timed gap — the fixed-offset
+   analysis here is now historical (a producer that runs long no longer races
+   the renderer; it just delays it). **The catch-up (`run-checkin-catchup`, `0 10 * * *`) is the
    implemented stopgap (OPTION 3):** a transient producer failure bakes a
    permanent placeholder into note `D` (nothing re-runs), so the `10:00` job
    re-runs the producer + renderer for `D` *only when its PG row is missing* —
@@ -185,6 +217,15 @@ the doctor so the dashboard/display match.
 
 ## Changelog
 
+- **2026-06-19** — **OMG-002 fix:** the staggered nightly cron lines are
+  replaced by a single ordered driver, `run-checkin-nightly`
+  (`scripts/run-checkin-nightly.sh`, `auto-review-bhp`), invoked at `8 0 * * *`.
+  Phases run in dependency order and WAIT, so the renderer runs after the
+  producer completes (no more fixed-offset race — the 06-18 placeholder) and the
+  doctor runs last structurally. `run-memex-sync` (hourly) and `vault-sync-pull`
+  (`*/5`) keep their own lines; the `10:00` catch-up becomes a failure-only
+  backstop (`auto-review-8vo`). Each phase is `timeout`-bounded and non-fatal.
+  Crontab cutover is the gated final step (back up + diff + install).
 - **2026-06-16** — Weekly cron day fixed Sunday→Monday (`1 10 * * 0` →
   `8 0 * * 1`); recaps had lagged a full week. Nightly stagger tightened
   `00:01–00:51` → `00:01–00:22`: doctor moved last (`00:31`→`00:22`), renderer
