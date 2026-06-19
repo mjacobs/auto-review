@@ -52,8 +52,12 @@ failures=0
 run_phase() {
     local name="$1" budget="$2"
     shift 2
-    if ! command -v "$1" >/dev/null 2>&1; then
-        log "phase $name SKIPPED — '$1' not on PATH"
+    # Extract the command defensively: under `set -u` a bare `$1` here would
+    # CRASH the whole driver if run_phase were ever called with no command —
+    # the opposite of this script's never-abort-the-chain contract. Skip instead.
+    local cmd="${1:-}"
+    if [[ -z "$cmd" ]] || ! command -v "$cmd" >/dev/null 2>&1; then
+        log "phase $name SKIPPED — '${cmd}' not specified or not on PATH"
         failures=$((failures + 1))
         return 0
     fi
@@ -74,7 +78,7 @@ run_phase() {
     return 0
 }
 
-log "nightly cluster start (host $(hostname), $(date +%Y-%m-%d' '%H:%M' '%Z))"
+log "nightly cluster start (host $(hostname), $(date +"%Y-%m-%d %H:%M %Z"))"
 
 # 1. vault-review daily — deterministic git-diff recap. Independent of the PG
 #    chain; first because it is fast and only git-serializes with later phases.
