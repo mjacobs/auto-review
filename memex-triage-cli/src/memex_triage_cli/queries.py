@@ -21,6 +21,17 @@ WHERE t.state = %(state)s
 ORDER BY c.seq
 """
 
+# The resolution index: same shape/filter as SQL_INBOX but only the two columns
+# the seq->id / id-prefix resolver needs. Lets _capture_index skip the heavy
+# content/summary payload it would otherwise load just to build the lookup.
+SQL_RESOLVE_INDEX = """
+SELECT c.id, c.seq
+FROM memex.captures c
+JOIN memex.capture_triage t ON t.capture_id = c.id
+WHERE t.state = %(state)s
+ORDER BY c.seq
+"""
+
 # A single triage flip. UPDATE only — the row is guaranteed to exist (seeded by
 # the sync job); the memex_triage role cannot INSERT here.
 SQL_SET_STATE = """

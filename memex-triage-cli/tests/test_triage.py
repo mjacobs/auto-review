@@ -102,3 +102,20 @@ def test_resolution_spans_states(store: FakeStore) -> None:
     store.seed(make_capture(4, state="discarded"))
     set_states(["4"], "filed", connect=store.connect)
     assert store.state_of(4) == "filed"
+
+
+def test_resolution_uses_minimal_index_columns(store: FakeStore) -> None:
+    """Resolution goes through SQL_RESOLVE_INDEX, which yields only (id, seq).
+
+    The fake's SQL_RESOLVE_INDEX branch returns rows lacking content/summary, so
+    these flips passing proves _capture_index resolves by both seq and
+    id-prefix without ever reading the heavy payload columns.
+    """
+    cap = make_capture(8, capture_id="c0ffee00-0000-0000-0000-000000000000")
+    store.seed(cap)
+    # by seq
+    set_states(["8"], "filed", connect=store.connect)
+    assert store.state_of(8) == "filed"
+    # by id-prefix
+    set_states(["c0ffee"], "discarded", connect=store.connect)
+    assert store.state_of(8) == "discarded"

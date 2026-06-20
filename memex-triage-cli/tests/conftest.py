@@ -73,6 +73,15 @@ class FakeCursor:
                 if c["state"] == params["state"]
             ]
             self._rows = sorted(rows, key=lambda r: r["seq"])
+        elif sql == queries.SQL_RESOLVE_INDEX:
+            # Resolution index: same state filter as SQL_INBOX but only (id, seq),
+            # mirroring the lightweight column list the real query selects.
+            rows = [
+                {k: c[k] for k in ("id", "seq")}
+                for c in self.store.captures.values()
+                if c["state"] == params["state"]
+            ]
+            self._rows = sorted(rows, key=lambda r: r["seq"])
         elif sql == queries.SQL_SET_STATE:
             cap = self.store.captures.get(params["id"])
             if cap is None:

@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from . import db
-from .queries import SQL_INBOX, SQL_SET_STATE
+from .queries import SQL_INBOX, SQL_RESOLVE_INDEX, SQL_SET_STATE
 
 # connect() seam: any zero-arg callable yielding a psycopg-shaped connection
 # context manager (tests pass a fake; production default is db.connect).
@@ -97,14 +97,16 @@ def set_states(
 def _capture_index(conn) -> dict:
     """A lookup of every capture by seq (as str) and by id, for resolution.
 
-    Read via the inbox query across all states so resolution works regardless
-    of a capture's current triage state (re-filing a discarded item, etc.).
+    Read across all states (via the lightweight (id, seq) resolution query) so
+    resolution works regardless of a capture's current triage state (re-filing
+    a discarded item, etc.). SQL_RESOLVE_INDEX mirrors SQL_INBOX's state filter
+    but skips the content/summary payload resolution never reads.
     """
     index: dict[str, str] = {}
     ids: list[str] = []
     for st in VALID_STATES:
         with conn.cursor() as cur:
-            cur.execute(SQL_INBOX, {"state": st})
+            cur.execute(SQL_RESOLVE_INDEX, {"state": st})
             for row in cur.fetchall():
                 cid = row["id"]
                 index[str(row["seq"])] = cid
