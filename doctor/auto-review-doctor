@@ -19,8 +19,10 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -53,6 +55,25 @@ SQL_LATEST_RUNS = (
     "to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
     "status, coalesce(cost_usd::text, ''), coalesce(summary::text, '{}') "
     "FROM ops.job_runs ORDER BY job_name, finished_at DESC"
+)
+
+# ── PG self-row write: the external dead-man substrate (auto-review-02w) ──
+# g52's in-band self-liveness can't fire while the doctor is FULLY down (nothing
+# runs to report — the watcher-flaw). So the doctor ALSO records its own
+# ops.job_runs row at the end of every run, making "latest doctor row age" a
+# substrate any INDEPENDENT process with PG read access can check in one line:
+#   SELECT now() - max(finished_at) FROM ops.job_runs WHERE job_name = 'auto-review-doctor';
+# The job_name is registered in ops.jobs by db/migrations/0009 (the job_runs FK
+# requires it); the auto_review_doctor role already holds INSERT (0005).
+DOCTOR_JOB_NAME = "auto-review-doctor"
+# finished_at defaults to now(); started_at is supplied (a now() default would
+# fake durations — see ops.job_runs). cost_usd is NULL: the doctor does no LLM
+# work (the renderer's runlog precedent). Values are injected via psql variables
+# (-v ... + :'name') which substitute as properly-quoted SQL string literals, so
+# the statement is injection-safe even though we control every value.
+SQL_INSERT_DOCTOR_RUN = (
+    "INSERT INTO ops.job_runs (job_name, host, started_at, finished_at, status, cost_usd, summary) "
+    "VALUES (:'job_name', :'host', :'started_at', now(), :'status', NULL, :'summary'::jsonb)"
 )
 
 # The agent-review placeholder literal the RENDERER writes when there is no
@@ -120,7 +141,7 @@ JOBS = [
     # renderer are PG-monitored (job_runs liveness, below). vault-review moved to
     # PG liveness 2026-06-17 (auto-review-2vv) — see the PG block below; the only
     # remaining marker job is the doctor's own self-row.
-    Job("auto-review-doctor daily", "auto-review LXC (.223)", "via run-checkin-nightly (last phase)", "check-in § (health)", True,
+    Job("auto-review-doctor daily", "auto-review LXC (.223)", "via run-checkin-nightly (last phase)", "check-in § (health) + ops.job_runs (own dead-man row)", True,
         hhmm="00:22", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
         marker_tool="auto-review-doctor", marker_key="daily"),
     # ── PG-monitored: liveness = a fresh ops.job_runs row, not log+marker ──────
@@ -281,11 +302,12 @@ def query_latest_runs(dsn: str | None) -> dict[str, RunRow] | None:
     """
     if not dsn or not shutil.which("psql"):
         return None
+    conn_arg, pg_env = _psql_conn(dsn)
     try:
         proc = subprocess.run(
-            ["psql", dsn, "-At", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", SQL_LATEST_RUNS],
+            ["psql", conn_arg, "-At", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", SQL_LATEST_RUNS],
             capture_output=True, text=True, timeout=PSQL_TIMEOUT_S,
-            env={**os.environ, "PGCONNECT_TIMEOUT": "8"},
+            env={**os.environ, "PGCONNECT_TIMEOUT": "8", **pg_env},
         )
     except (subprocess.SubprocessError, OSError):
         return None
@@ -293,6 +315,106 @@ def query_latest_runs(dsn: str | None) -> dict[str, RunRow] | None:
         return None
     rows = [line.split("\t") for line in proc.stdout.splitlines() if line.strip()]
     return _rows_to_runmap(rows)
+
+
+def _psql_conn(dsn: str) -> tuple[str, dict[str, str]]:
+    """Split a Postgres conninfo into (arg_for_psql, extra_env) that keeps any
+    PASSWORD out of psql's argv (auto-review-02w, roborev review job 129).
+
+    A password on the command line is world-readable via /proc/<pid>/cmdline, so
+    only the password is moved to PGPASSWORD (env → /proc/<pid>/environ, mode 0400,
+    owner/root only); host/user/db (not secrets) stay in the connection arg.
+    Defensive by design: handles the URI and keyword conninfo forms, and on
+    ANYTHING it can't confidently parse it returns the DSN unchanged — this fix
+    can only relocate a clearly-extractable password, never break a working
+    connection. A .pgpass-backed DSN (no embedded password) is a clean no-op.
+    """
+    # URI form: postgres[ql]://user[:PASSWORD]@host…[?…&password=…]. libpq accepts
+    # the password BOTH in userinfo AND as a ?password= query param (incl. the
+    # Unix-socket `postgresql:///db?host=/run/pg&password=…` form, which has no
+    # userinfo), so strip it from both (roborev review job 138).
+    if re.match(r"(?i)postgres(?:ql)?://", dsn.strip()):
+        parts = urllib.parse.urlsplit(dsn.strip())
+        netloc, query, pw = parts.netloc, parts.query, None
+        if parts.password is not None and "@" in netloc:
+            userinfo, hostinfo = netloc.rsplit("@", 1)
+            user = userinfo.split(":", 1)[0]
+            netloc = f"{user}@{hostinfo}" if user else hostinfo  # hostinfo verbatim (IPv6/port)
+            pw = urllib.parse.unquote(parts.password)
+        if query:
+            # Raw-split, NOT parse_qsl: a Postgres URI query is RFC3986 (a literal
+            # '+' is a '+'), whereas parse_qsl form-decodes '+'→space and would
+            # corrupt the password and any other param (roborev review job 144).
+            # Non-password segments are kept verbatim; only the password is
+            # percent-decoded (urllib.parse.unquote leaves '+' literal).
+            segs = query.split("&")
+            pw_segs = [s for s in segs if s.split("=", 1)[0].lower() == "password"]
+            if pw_segs:
+                last = pw_segs[-1]  # libpq: last password wins
+                pw = urllib.parse.unquote(last.split("=", 1)[1]) if "=" in last else ""
+                query = "&".join(s for s in segs if s.split("=", 1)[0].lower() != "password")
+        if pw is None:
+            return dsn, {}
+        sanitized = urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+        return sanitized, {"PGPASSWORD": pw}
+    # keyword form: host=... password=secret (or password='se cret', backslash-escaped).
+    # Strip EVERY password= assignment and take the LAST value — libpq uses the
+    # last when a keyword repeats, so removing only the first would leave the
+    # effective password in argv (roborev review job 147). Extra whitespace left
+    # between the remaining keywords is harmless to libpq.
+    pat = re.compile(r"(?ix) (?:^|\s) password \s*=\s* (?: '((?:[^'\\]|\\.)*)' | (\S+) )")
+    matches = list(pat.finditer(dsn))
+    if not matches:
+        return dsn, {}
+    last = matches[-1]
+    pw = last.group(1).replace("\\'", "'").replace("\\\\", "\\") if last.group(1) is not None else last.group(2)
+    return pat.sub(" ", dsn).strip(), {"PGPASSWORD": pw}
+
+
+def record_doctor_run(
+    dsn: str | None,
+    *,
+    started_at: dt.datetime,
+    status: str,
+    summary: dict,
+) -> bool:
+    """Append ONE ops.job_runs row for the doctor itself, best-effort.
+
+    This is the EXTERNAL dead-man substrate (auto-review-02w): a row the doctor
+    leaves behind each run so an independent process can detect the doctor being
+    fully down (a case g52's in-band check structurally can't catch). Mirrors the
+    read path: a stdlib `psql` subprocess (NOT psycopg), degrading silently to a
+    no-op when there's no DSN or psql isn't on PATH. Write errors are SWALLOWED —
+    a failed self-row must never crash the doctor's primary health output (the FK
+    isn't applied yet, the DB is down, etc.). Returns True iff a row was written.
+
+    Values go through psql `-v name=value` variables referenced as :'name', which
+    substitute as properly-quoted SQL string literals — injection-safe even
+    though every value here is the doctor's own. started_at is rendered as the
+    same UTC "…Z" ISO form parse_utc_iso()/the query use; cost_usd is NULL (the
+    doctor does no LLM work — the renderer runlog precedent).
+    """
+    if not dsn or not shutil.which("psql"):
+        return False
+    started_iso = started_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn_arg, pg_env = _psql_conn(dsn)
+    try:
+        proc = subprocess.run(
+            [
+                "psql", conn_arg, "-At", "-q", "-v", "ON_ERROR_STOP=1",
+                "-v", f"job_name={DOCTOR_JOB_NAME}",
+                "-v", f"host={socket.gethostname()}",
+                "-v", f"started_at={started_iso}",
+                "-v", f"status={status}",
+                "-v", f"summary={json.dumps(summary, separators=(',', ':'))}",
+                "-c", SQL_INSERT_DOCTOR_RUN,
+            ],
+            capture_output=True, text=True, timeout=PSQL_TIMEOUT_S,
+            env={**os.environ, "PGCONNECT_TIMEOUT": "8", **pg_env},
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return proc.returncode == 0
 
 
 def assess_pg_job(
@@ -968,6 +1090,11 @@ def main() -> int:
     ap.add_argument("--print", action="store_true", help="also print to stdout when writing")
     args = ap.parse_args()
 
+    # Captured here so the recorded ops.job_runs row (auto-review-02w) reflects
+    # the doctor's true start, not its finish (finished_at defaults to now() in
+    # the INSERT). A now() default for started_at would fake a zero duration.
+    started_at = dt.datetime.now(UTC)
+
     today_pt = (
         dt.date.fromisoformat(args.date)
         if args.date
@@ -994,7 +1121,21 @@ def main() -> int:
     section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness, agent_artifact_warning)
     moving_pieces = render_moving_pieces(today_pt)
 
+    # Compact summary for the doctor's own ops.job_runs row (auto-review-02w),
+    # mirroring render_section's jobs-healthy math (len(fired)/len(expected)) so
+    # the recorded substrate agrees with the displayed section.
+    expected = [r for r in reports if r.skipped_reason is None]
+    fired = [r for r in expected if r.fired]
+    doctor_summary = {
+        "jobs_healthy": f"{len(fired)}/{len(expected)}",
+        "tracebacks": len(tracebacks),
+        "push_rejections": push_rejections,
+    }
+
     if args.dry_run:
+        # --dry-run suppresses ALL side effects, including the self-row write (it
+        # must NOT leave a dead-man row), mirroring how the check-in/registry
+        # writes below are skipped here.
         sys.stdout.write(section)
         sys.stdout.write("\n----- reference/auto-review/moving-pieces.md -----\n")
         sys.stdout.write(moving_pieces)
@@ -1015,6 +1156,22 @@ def main() -> int:
         sys.stdout.write(section)
     print(f"auto-review-doctor: wrote section → {today_path}", file=sys.stderr)
     print(f"auto-review-doctor: wrote registry → {mp_path}", file=sys.stderr)
+
+    # External dead-man substrate (auto-review-02w): record the doctor's OWN
+    # ops.job_runs row LAST — after reading the other jobs' rows and rendering its
+    # health output — so a row is the doctor's "I completed this run" beat. Any
+    # independent process can then alarm on `now() - max(finished_at)` for this
+    # job_name without re-introducing a second check-in writer. Best-effort: a
+    # failed/absent write degrades silently (no DSN/psql, FK not yet applied, DB
+    # down) and never changes the primary health output's exit status.
+    if record_doctor_run(
+        os.environ.get(PG_DSN_ENV),
+        started_at=started_at,
+        status="ok",
+        summary=doctor_summary,
+    ):
+        print("auto-review-doctor: recorded ops.job_runs dead-man row", file=sys.stderr)
+
     return 0
 
 
