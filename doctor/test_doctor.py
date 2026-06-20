@@ -544,6 +544,229 @@ def test_weekly_degraded_and_never_ran():
     assert never.fired is False and never.fired_at_pt is None and never.pg_status is None
 
 
+# ─── artifact assertion: placeholder-in-note vs producer status (auto-review-byp) ─
+#
+# The OMG-002 defect (2026-06-18): the doctor reported agent-review 'ok' off the
+# producer's ops.job_runs STATUS while the rendered note still carried the
+# `_no agent-review report row for D_` placeholder. assess_agent_artifact asserts
+# the ARTIFACT — but must NOT fire on a legitimate quiet day, which renders the
+# IDENTICAL placeholder (producer ok, reports=0, no daily_reports row). The guard
+# keys on "placeholder present AND producer persisted a report for D".
+
+YDAY = dt.date(2026, 6, 18)
+
+
+def _renderer_bracket(d: dt.date, inner: str) -> str:
+    """Wrap `inner` in the REAL renderer begin/end bracket for date `d`
+    (renderer/src/checkin_renderer/compose.py). The begin marker has NO
+    generated_at; the end marker does. This is the ONLY structural anchor —
+    the renderer strips legacy per-section `agent-review:report_date=` markers,
+    so the fixtures contain none."""
+    iso = d.isoformat()
+    return (
+        f"# check-in — {iso}\n\n"
+        f"<!-- checkin-renderer:begin daily={iso} -->\n"
+        f"{inner}\n"
+        f"<!-- checkin-renderer:end daily={iso} generated_at=2026-06-19T08:17:09Z -->\n"
+    )
+
+
+def _note_with_agent_placeholder(d: dt.date = YDAY) -> str:
+    # Quiet/placeholder agent-review section as the renderer writes it: the
+    # heading AND placeholder are date-pinned to D (render_agent_section(None, D)).
+    iso = d.isoformat()
+    inner = (
+        f"## agent-review — {iso}\n\n"
+        f"_no agent-review report row for {iso}_"
+    )
+    return _renderer_bracket(d, inner)
+
+
+def _note_with_real_agent_report(d: dt.date = YDAY) -> str:
+    # A SUCCESSFUL agent-review section: the heading is keyed to the report's
+    # generated-at (e.g. "## agent-review — 2026-06-19 00:17"), NOT to D, and
+    # there is no placeholder string anywhere in the bracket.
+    inner = (
+        f"## agent-review — {d.isoformat()} 00:17\n\n"
+        f"_window: {d.isoformat()} 00:00 → 00:17 · 3 sessions · 2 projects · ~$0.12_\n\n"
+        f"### narrative\n\n"
+        f"Shipped the artifact check and tidied the renderer bracket.\n\n"
+        f"### stats\n\n"
+        f"| sessions | est. cost |\n|---:|---:|\n| 3 | $0.1200 |"
+    )
+    return _renderer_bracket(d, inner)
+
+
+def _ar_runrow(reports: int, dates, status="ok", finished=None):
+    return doctor.RunRow(
+        job_name="agent-review",
+        finished_at=finished or dt.datetime(2026, 6, 19, 8, 10, tzinfo=dt.timezone.utc),
+        status=status,
+        cost_usd=0.12 if reports else None,
+        summary={"reports": reports, "dates": dates, "sessions": 3 if reports else 0},
+    )
+
+
+def test_artifact_warns_when_placeholder_but_report_persisted():
+    # (a) REGRESSION GUARD: renderer bracket present + the date-pinned placeholder
+    # inside it AND the producer persisted a report for D (reports>=1, dates
+    # includes D) → the real OMG-002 defect → WARN. This case FAILS against the
+    # old marker-based extraction (it looked for a per-section
+    # `agent-review:report_date=` marker the renderer never emits, so it always
+    # returned None and the warning could never fire).
+    runs = {"agent-review": _ar_runrow(reports=1, dates=[YDAY.isoformat()])}
+    note = _note_with_agent_placeholder()
+    assert "agent-review:report_date=" not in note  # renderer-shaped: no legacy marker
+    assert "checkin-renderer:begin daily=" in note  # the real renderer bracket
+    warn = doctor.assess_agent_artifact(note, YDAY, runs)
+    assert warn is not None
+    assert "artifact mismatch" in warn
+    assert YDAY.isoformat() in warn
+
+
+def test_artifact_quiet_day_stays_green():
+    # (b) bracket present + placeholder + NO report (reports=0) + producer
+    # status='ok' → a legitimate zero-session day renders the SAME string →
+    # must stay silent (quiet day stays green).
+    runs = {"agent-review": _ar_runrow(reports=0, dates=[YDAY.isoformat()], status="ok")}
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, runs)
+    assert warn is None
+
+
+def test_artifact_no_warning_when_real_report_rendered():
+    # (c) bracket present + a real agent-review narrative (no placeholder) →
+    # nothing to flag, even though the producer persisted a report.
+    runs = {"agent-review": _ar_runrow(reports=1, dates=[YDAY.isoformat()])}
+    warn = doctor.assess_agent_artifact(_note_with_real_agent_report(), YDAY, runs)
+    assert warn is None
+
+
+def test_artifact_no_warning_when_no_renderer_bracket():
+    # (d) no renderer bracket at all → no warning. The renderer didn't run (its
+    # liveness is separately PG-monitored), so there is nothing to assert here —
+    # even with the placeholder text present and a persisted report.
+    runs = {"agent-review": _ar_runrow(reports=1, dates=[YDAY.isoformat()])}
+    note = (
+        f"# check-in — {YDAY.isoformat()}\n\n"
+        f"## agent-review — {YDAY.isoformat()}\n\n"
+        f"_no agent-review report row for {YDAY.isoformat()}_\n"
+    )
+    assert doctor.assess_agent_artifact(note, YDAY, runs) is None
+
+
+def test_artifact_silent_when_pg_degraded():
+    # PG unreachable (pg_runs is None): can't tell a defect from a quiet day, so
+    # don't false-alarm — the placeholder alone is NOT enough to warn.
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, None)
+    assert warn is None
+
+
+def test_artifact_silent_when_no_agent_review_row():
+    # Producer never recorded a run → no report signal → stay silent.
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, {})
+    assert warn is None
+
+
+def test_artifact_silent_when_run_covered_a_different_day():
+    # A stale latest row whose summary.dates is some OTHER day must NOT be misread
+    # as covering D, even with reports>=1 — guards against a stale-row false positive.
+    other = (YDAY - dt.timedelta(days=2)).isoformat()
+    runs = {"agent-review": _ar_runrow(reports=1, dates=[other])}
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, runs)
+    assert warn is None
+
+
+def test_artifact_silent_when_no_agent_section_in_note():
+    # A renderer bracket exists for D but holds no agent-review placeholder (e.g.
+    # only the memex section rendered) → no placeholder match → silent. A missing
+    # agent section is a different signal, not this artifact check's concern.
+    runs = {"agent-review": _ar_runrow(reports=1, dates=[YDAY.isoformat()])}
+    note = _renderer_bracket(
+        YDAY,
+        f"## memex — {YDAY.isoformat()} — inbox\n\n_no captures in window_",
+    )
+    assert doctor.assess_agent_artifact(note, YDAY, runs) is None
+
+
+def test_artifact_silent_without_dates():
+    # An older run-row whose summary has `reports` but no `dates` can't pin the
+    # aggregate count to D, so we stay silent rather than risk a false positive
+    # (auto-review-byp roborev fix: `reports` is a total, not a per-day signal).
+    runs = {"agent-review": doctor.RunRow(
+        job_name="agent-review",
+        finished_at=dt.datetime(2026, 6, 19, 8, 10, tzinfo=dt.timezone.utc),
+        status="ok", cost_usd=0.1, summary={"reports": 2},
+    )}
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, runs)
+    assert warn is None
+
+
+def test_artifact_silent_on_multidate_backfill_run():
+    # roborev review (auto-review-byp): a multi-date backfill run (e.g. 06-18..06-19)
+    # records ALL requested dates in summary.dates and only an AGGREGATE reports
+    # count. If 06-18 persisted but D=06-19 was quiet, a plain `D in dates` test
+    # would misread D as covered and false-warn D's CORRECT placeholder. The fix
+    # asserts only on a single-date run covering exactly D, so this stays silent.
+    runs = {"agent-review": _ar_runrow(
+        reports=1, dates=[(YDAY - dt.timedelta(days=1)).isoformat(), YDAY.isoformat()],
+    )}
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, runs)
+    assert warn is None
+
+
+def test_rows_to_runmap_parses_summary_reports():
+    # The liveness query now selects summary too (5th column); reports is parsed out.
+    rows = [
+        ["agent-review", "2026-06-19T08:10:00Z", "ok", "0.12",
+         '{"reports": 1, "dates": ["2026-06-18"], "sessions": 3}'],
+        ["memex-sync", "2026-06-19T08:05:00Z", "ok", "", ""],   # empty summary → {}
+    ]
+    m = doctor._rows_to_runmap(rows)
+    assert m["agent-review"].summary["reports"] == 1
+    assert m["agent-review"].summary["dates"] == ["2026-06-18"]
+    assert m["memex-sync"].summary == {}
+
+
+def test_rows_to_runmap_back_compat_four_columns():
+    # A 4-column row (pre-byp query shape) still parses, with an empty summary.
+    m = doctor._rows_to_runmap([["agent-review", "2026-06-19T08:10:00Z", "ok", "0.12"]])
+    assert m["agent-review"].summary == {}
+    assert m["agent-review"].status == "ok"
+
+
+def test_sql_latest_runs_selects_summary():
+    # The single liveness query is EXTENDED (no new round-trip) to carry summary.
+    assert "summary" in doctor.SQL_LATEST_RUNS
+
+
+def test_render_section_surfaces_agent_artifact_warning():
+    today = dt.date(2026, 6, 19)
+    runs = {"agent-review": _ar_runrow(reports=1, dates=[YDAY.isoformat()])}
+    warn = doctor.assess_agent_artifact(_note_with_agent_placeholder(), YDAY, runs)
+    reports = _pg_reports(runs, today)
+    out = doctor.render_section(
+        today, reports, [], 0,
+        (today - dt.timedelta(days=1), []), warn,
+    )
+    assert "artifact mismatch" in out
+
+
+def test_agent_placeholder_literal_matches_renderer_source():
+    # Drift guard: the doctor duplicates the renderer's placeholder literal (it
+    # can't import the renderer package — it's a standalone stdlib script). Assert
+    # the doctor's prefix still appears verbatim in sections/agent.py, so a rename
+    # there fails THIS test instead of silently disabling the artifact check.
+    agent_src = (
+        Path(__file__).resolve().parents[1]
+        / "renderer" / "src" / "checkin_renderer" / "sections" / "agent.py"
+    )
+    text = agent_src.read_text(encoding="utf-8")
+    assert doctor.AGENT_PLACEHOLDER_PREFIX in text, (
+        "doctor.AGENT_PLACEHOLDER_PREFIX drifted from sections/agent.py — "
+        "the artifact check would silently stop matching the rendered placeholder"
+    )
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
