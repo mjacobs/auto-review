@@ -105,6 +105,39 @@ a view over it); the markdown-era fields (`hhmm`, `commit_regex`,
 exist only to parse the serialization format this layer deletes (`is_weekly`
 folds into `expected_interval`).
 
+### The doctor's own row is the dead-man substrate (auto-review-02w)
+
+The doctor's in-band self-liveness (a 7-day check-in lookback, auto-review-g52)
+has a structural blind spot: it cannot fire while the doctor is **fully down** —
+nothing runs to report the gap. To cover that "who watches the watcher" case the
+doctor records **its own** `ops.job_runs` row at the end of every run (registered
+as `auto-review-doctor` in `0009`; the `auto_review_doctor` role already holds the
+`INSERT`). "Latest doctor row age" then becomes a queryable substrate, and the
+external real-time check is one line, runnable by **any** independent process with
+PG read access (the desktop, a baox cron — anything off the doctor's host):
+
+```sql
+SELECT now() - max(finished_at)
+  FROM ops.job_runs
+ WHERE job_name = 'auto-review-doctor';
+```
+
+Alarm when that age exceeds a day (the job's 26h `expected_interval`). This keeps
+the dead-man check **out** of the doctor without reintroducing a second check-in
+writer (the contention g52 deliberately avoided) — it's a tiny `job_runs` insert,
+not a new table or a second marker. The doctor writes the row via the same
+stdlib `psql` subprocess seam it reads with (no psycopg dependency), best-effort:
+a failed/absent write (no DSN, FK not yet applied, DB down) degrades to a no-op
+and never crashes the health output. A crashed doctor writes no row at all and
+simply goes overdue — exactly the signal we want.
+
+**Residual tradeoff:** the independent checker is *itself* unmonitored (the
+regress never fully closes). But a one-line SQL check on a box that is not the
+doctor's host is a much smaller thing to trust than the whole doctor — acceptable
+per auto-review-02w. (The doctor does **not** add a `pg_job_name` self-check to
+its own `JOBS` list: that would re-create g52's watcher-flaw in-band; the row's
+value is precisely as an *external* substrate.)
+
 ### memex: mirror and state are separate tables
 
 `memex.captures` is a mirror of the cf-memex change feed (column shape =
@@ -223,11 +256,14 @@ never alters it; the only privilege it adds is `INSERT ON ops.job_runs`
 3. **Capture deletion propagation.** The seq feed has no tombstones; a D1
    delete currently never reaches the PG mirror. Probably fine (deletes are
    rare), but decide before treating the mirror as authoritative.
-4. **Dead-man substrate (auto-review-02w).** A separate `ops.heartbeats`
-   table was considered and dropped as speculative: per hg6.8 "a heartbeat
-   row in job_runs is the natural deadman substrate" — a beat is a tiny
-   `job_runs` insert. Whether a checker *independent of the doctor* exists
-   (02w's real question) remains open.
+4. **Dead-man substrate (auto-review-02w).** RESOLVED: the doctor now records
+   its own `ops.job_runs` row each run (registered in `0009`), so "latest
+   doctor row age" is the substrate — see "The doctor's own row is the dead-man
+   substrate" above. A separate `ops.heartbeats` table was considered and
+   dropped as speculative (per hg6.8 "a heartbeat row in job_runs is the natural
+   deadman substrate"). What stays open is only *deploying* an independent
+   checker (the one-line SQL on the desktop / a baox cron); that checker is
+   itself unmonitored, an accepted residual.
 5. **`job_runs.status` vocabulary.** `ok/error` only. `running` went away
    with the append-only design (no row to update); a `skipped` state (e.g.
    weekly jobs on non-Mondays) was considered and deferred — the liveness

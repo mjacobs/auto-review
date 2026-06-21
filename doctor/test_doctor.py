@@ -13,6 +13,7 @@ import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest import mock
 
 _path = Path(__file__).with_name("auto-review-doctor")
 _loader = SourceFileLoader("auto_review_doctor", str(_path))
@@ -752,6 +753,194 @@ def test_agent_placeholder_literal_matches_renderer_source():
         "doctor.AGENT_PLACEHOLDER_PREFIX drifted from sections/agent.py — "
         "the artifact check would silently stop matching the rendered placeholder"
     )
+
+
+# ─── doctor self-row write: the external dead-man substrate (auto-review-02w) ──
+
+DOCTOR_STARTED = dt.datetime(2026, 6, 13, 8, 31, 5, tzinfo=dt.timezone.utc)
+DOCTOR_SUMMARY = {"jobs_healthy": "5/5", "tracebacks": 0, "push_rejections": 0}
+
+
+def _flag_value(argv, flag):
+    """Collect every value following an occurrence of `flag` in an argv list."""
+    return [argv[i + 1] for i, a in enumerate(argv) if a == flag and i + 1 < len(argv)]
+
+
+def test_record_doctor_run_attempts_insert_with_job_name_status_summary():
+    # The happy path: psql on PATH + a DSN -> one INSERT subprocess carrying the
+    # right job_name/status/summary as psql -v variables (the injection-safe seam).
+    fake = mock.Mock(returncode=0, stdout="", stderr="")
+    with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/psql"), \
+            mock.patch.object(doctor.subprocess, "run", return_value=fake) as run:
+        wrote = doctor.record_doctor_run(
+            "postgresql://u@h/db",
+            started_at=DOCTOR_STARTED, status="ok", summary=DOCTOR_SUMMARY,
+        )
+    assert wrote is True
+    run.assert_called_once()
+    argv = run.call_args.args[0]
+    assert argv[0] == "psql"
+    # The statement is an INSERT into ops.job_runs (not a read).
+    sql = argv[-1]
+    assert "INSERT INTO ops.job_runs" in sql
+    # Values ride as -v variables; job_name/status/summary are present and correct.
+    vars_passed = _flag_value(argv, "-v")
+    assert f"job_name={doctor.DOCTOR_JOB_NAME}" in vars_passed
+    assert "status=ok" in vars_passed
+    # summary is compact JSON carrying the health figures.
+    summ = next(v for v in vars_passed if v.startswith("summary="))
+    assert '"jobs_healthy":"5/5"' in summ
+    assert '"tracebacks":0' in summ
+    # started_at is the supplied start, rendered as the same UTC "…Z" ISO form.
+    assert "started_at=2026-06-13T08:31:05Z" in vars_passed
+
+
+def test_record_doctor_run_no_op_without_dsn():
+    # No DSN -> never even shells out; returns False, raises nothing.
+    with mock.patch.object(doctor.subprocess, "run") as run:
+        assert doctor.record_doctor_run(
+            None, started_at=DOCTOR_STARTED, status="ok", summary=DOCTOR_SUMMARY,
+        ) is False
+        assert doctor.record_doctor_run(
+            "", started_at=DOCTOR_STARTED, status="ok", summary=DOCTOR_SUMMARY,
+        ) is False
+    run.assert_not_called()
+
+
+def test_record_doctor_run_no_op_without_psql():
+    # DSN present but psql not on PATH -> degrade silently, no subprocess.
+    with mock.patch.object(doctor.shutil, "which", return_value=None), \
+            mock.patch.object(doctor.subprocess, "run") as run:
+        assert doctor.record_doctor_run(
+            "postgresql://u@h/db",
+            started_at=DOCTOR_STARTED, status="ok", summary=DOCTOR_SUMMARY,
+        ) is False
+    run.assert_not_called()
+
+
+def test_record_doctor_run_swallows_subprocess_failure():
+    # The subprocess raising (e.g. timeout, OSError) must NOT crash the doctor.
+    with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/psql"), \
+            mock.patch.object(
+                doctor.subprocess, "run",
+                side_effect=doctor.subprocess.TimeoutExpired(cmd="psql", timeout=10),
+            ):
+        assert doctor.record_doctor_run(
+            "postgresql://u@h/db",
+            started_at=DOCTOR_STARTED, status="ok", summary=DOCTOR_SUMMARY,
+        ) is False
+
+
+def test_record_doctor_run_returns_false_on_nonzero_exit():
+    # A non-zero psql exit (e.g. FK not yet applied / DB down) is a clean no-op,
+    # not a crash — the primary health output must still complete.
+    fake = mock.Mock(returncode=1, stdout="", stderr="ERROR: insert or update ...")
+    with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/psql"), \
+            mock.patch.object(doctor.subprocess, "run", return_value=fake):
+        assert doctor.record_doctor_run(
+            "postgresql://u@h/db",
+            started_at=DOCTOR_STARTED, status="ok", summary=DOCTOR_SUMMARY,
+        ) is False
+
+
+def test_insert_doctor_run_sql_is_well_shaped():
+    # Drift guard: the INSERT targets ops.job_runs, NULLs cost_usd (no LLM work),
+    # casts summary to jsonb, and references values via psql :'var' (quoted-literal
+    # substitution — the injection-safe form).
+    sql = doctor.SQL_INSERT_DOCTOR_RUN
+    assert "INSERT INTO ops.job_runs" in sql
+    assert ":'job_name'" in sql and ":'status'" in sql and ":'summary'" in sql
+    assert "NULL" in sql            # cost_usd
+    assert "::jsonb" in sql
+
+
+def test_record_doctor_run_uses_doctor_job_name():
+    # The registered name (db/migrations/0009 / ops.jobs FK target) is the constant
+    # the write uses, so the row lands under the name the external check queries.
+    assert doctor.DOCTOR_JOB_NAME == "auto-review-doctor"
+
+
+# ─── _psql_conn: keep the DSN password out of psql argv (auto-review-02w, job 129) ─
+
+
+def test_psql_conn_uri_password_moves_to_env():
+    arg, env = doctor._psql_conn("postgresql://user:s3cr3t@db.host:5432/ops?sslmode=require")
+    assert arg == "postgresql://user@db.host:5432/ops?sslmode=require"
+    assert "s3cr3t" not in arg
+    assert env == {"PGPASSWORD": "s3cr3t"}
+
+
+def test_psql_conn_uri_without_password_is_noop():
+    dsn = "postgresql://user@db.host:5432/ops"
+    assert doctor._psql_conn(dsn) == (dsn, {})
+
+
+def test_psql_conn_keyword_password_moves_to_env():
+    arg, env = doctor._psql_conn("host=db.host port=5432 user=u password=s3cr3t dbname=ops")
+    assert env == {"PGPASSWORD": "s3cr3t"}
+    assert "password" not in arg
+    assert "host=db.host" in arg and "dbname=ops" in arg
+
+
+def test_psql_conn_keyword_quoted_password_with_spaces():
+    arg, env = doctor._psql_conn("host=h user=u password='a b\\'c' dbname=d")
+    assert env == {"PGPASSWORD": "a b'c"}
+    assert "password" not in arg
+
+
+def test_psql_conn_no_password_is_noop():
+    # A .pgpass-backed DSN (no embedded password) passes through unchanged.
+    dsn = "host=db.host user=u dbname=ops"
+    assert doctor._psql_conn(dsn) == (dsn, {})
+
+
+def test_psql_conn_keyword_multiple_passwords_uses_last():
+    # libpq uses the LAST password keyword when one repeats; ALL must be stripped
+    # from argv (roborev review job 147).
+    arg, env = doctor._psql_conn("host=h password=first user=u password=second dbname=d")
+    assert env == {"PGPASSWORD": "second"}
+    assert "password" not in arg
+    assert "host=h" in arg and "dbname=d" in arg
+
+
+def test_psql_conn_uri_query_param_password_moves_to_env():
+    # libpq also accepts ?password= as a query param (roborev review job 138).
+    arg, env = doctor._psql_conn(
+        "postgresql://user@db.host:5432/ops?sslmode=require&password=qp_secret"
+    )
+    assert env == {"PGPASSWORD": "qp_secret"}
+    assert "qp_secret" not in arg and "password" not in arg
+    assert "sslmode=require" in arg
+
+
+def test_psql_conn_uri_unix_socket_query_password_moves_to_env():
+    # Unix-socket DSN form: no userinfo, password only in the query string.
+    arg, env = doctor._psql_conn(
+        "postgresql:///ops?host=/var/run/postgresql&user=u&password=sock_secret"
+    )
+    assert env == {"PGPASSWORD": "sock_secret"}
+    assert "sock_secret" not in arg and "password" not in arg
+
+
+def test_psql_conn_uri_query_password_plus_is_literal():
+    # RFC3986 (libpq) vs form-encoding (roborev review job 144): a '+' in a URI
+    # query password is a LITERAL '+', not a space; '%20' is the encoded space.
+    _, env = doctor._psql_conn("postgresql://u@h/db?password=a+b")
+    assert env == {"PGPASSWORD": "a+b"}
+    _, env2 = doctor._psql_conn("postgresql://u@h/db?password=a%20b")
+    assert env2 == {"PGPASSWORD": "a b"}
+
+
+def test_query_latest_runs_keeps_password_out_of_argv():
+    # Integration: the read path moves a URI password into PGPASSWORD (env), not argv.
+    fake = mock.Mock(returncode=0, stdout="", stderr="")
+    with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/psql"), \
+            mock.patch.object(doctor.subprocess, "run", return_value=fake) as run:
+        doctor.query_latest_runs("postgresql://u:topsecret@h/db")
+    argv = run.call_args.args[0]
+    env = run.call_args.kwargs["env"]
+    assert not any("topsecret" in str(a) for a in argv)
+    assert env.get("PGPASSWORD") == "topsecret"
 
 
 if __name__ == "__main__":
