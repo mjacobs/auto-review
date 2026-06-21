@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import shutil
@@ -40,12 +41,28 @@ PG_DSN_ENV = "AUTO_REVIEW_DOCTOR_PG_DSN"
 PSQL_TIMEOUT_S = 10
 # One latest row per job_name. finished_at is rendered as the same UTC "…Z" ISO
 # string parse_utc_iso() already understands; cost_usd as plain text ('' if NULL).
+# The summary jsonb is selected too (auto-review-byp): the agent-review run's
+# summary carries {"reports": N, "dates": [...]} — N is how many daily_reports
+# rows that run persisted. The doctor reads `reports` to tell a real report day
+# (reports>=1) from a quiet zero-session day (reports=0, identical placeholder
+# text) when asserting the rendered artifact. Selecting it here EXTENDS the one
+# existing liveness query rather than adding a second round-trip. A jsonb::text
+# cast emits compact JSON (no literal tabs), so it stays one -F'\t' field.
 SQL_LATEST_RUNS = (
     "SELECT DISTINCT ON (job_name) job_name, "
     "to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-    "status, coalesce(cost_usd::text, '') "
+    "status, coalesce(cost_usd::text, ''), coalesce(summary::text, '{}') "
     "FROM ops.job_runs ORDER BY job_name, finished_at DESC"
 )
+
+# The agent-review placeholder literal the RENDERER writes when there is no
+# agent_review.daily_reports row for the day (renderer/src/checkin_renderer/
+# sections/agent.py → render_agent_section, report is None). It's an f-string
+# `_no agent-review report row for {date}_`; this is the stable prefix. The
+# doctor can't import the renderer package (it's a standalone stdlib script), so
+# the literal is duplicated here and a test (test_doctor.py) asserts this prefix
+# still appears in sections/agent.py so the two can't silently drift apart.
+AGENT_PLACEHOLDER_PREFIX = "_no agent-review report row for "
 # How many prior days the doctor scans for its OWN section, to detect missed
 # runs (the motivating failure: consecutive silent misses nobody noticed).
 SELF_LIVENESS_WINDOW = 7
@@ -212,6 +229,12 @@ class RunRow:
     finished_at: dt.datetime     # UTC
     status: str                  # 'ok' | 'error'
     cost_usd: float | None
+    # The run's summary jsonb, parsed (auto-review-byp). For agent-review this
+    # carries {"reports": N, "dates": [...]}: `reports` is how many daily_reports
+    # rows the run persisted (0 on a quiet zero-session day), `dates` the days it
+    # covered. The artifact check (assess_agent_artifact) uses these to separate a
+    # real report from a legitimately-empty day. {} when absent/unparseable.
+    summary: dict = field(default_factory=dict)
 
 
 def _rows_to_runmap(rows: list[list[str]]) -> dict[str, RunRow]:
@@ -232,7 +255,20 @@ def _rows_to_runmap(rows: list[list[str]]) -> dict[str, RunRow]:
                 cost_usd = float(cost)
             except ValueError:
                 cost_usd = None
-        out[job_name] = RunRow(job_name=job_name, finished_at=ts, status=status, cost_usd=cost_usd)
+        # summary is the 5th column (added auto-review-byp); older queries / rows
+        # without it parse to an empty dict rather than failing.
+        summary: dict = {}
+        if len(r) >= 5 and r[4]:
+            try:
+                parsed = json.loads(r[4])
+                if isinstance(parsed, dict):
+                    summary = parsed
+            except (ValueError, TypeError):
+                summary = {}
+        out[job_name] = RunRow(
+            job_name=job_name, finished_at=ts, status=status,
+            cost_usd=cost_usd, summary=summary,
+        )
     return out
 
 
@@ -363,13 +399,16 @@ def latest_match(lines: list[str], pattern: re.Pattern[str]) -> tuple[str, dt.da
     return last
 
 
-def section_info(text: str, tool: str, marker_key: str, label: str) -> tuple[bool, int, str]:
-    """Find `<!-- {tool}:{marker_key}={label} ... -->` and its matching `## {tool} …` heading.
+def section_body(text: str, tool: str, marker_key: str, label: str) -> str | None:
+    """The body text between a section's `## {tool} …` heading and its close marker.
 
-    `marker_key`/`label` are "daily"/"YYYY-MM-DD" or "weekly"/"YYYY-W##", matching the
-    marker each sibling emits (see vault-review's vault.py).
+    Returns None when the close marker is absent (section not present at all), or
+    when the close marker is present but the opening heading isn't (the malformed
+    "open heading missing" case `section_info` flags). The heading line and the
+    close marker themselves are excluded — only the in-between content.
 
-    Returns (present, line_count_inside, note).
+    Shared by `section_info` (line count / capture note) and the artifact check
+    (`assess_agent_artifact`), so both extract the SAME bytes from the same note.
     """
     close_marker = re.compile(
         rf"^<!--\s*{re.escape(tool)}:{re.escape(marker_key)}={re.escape(label)}\s+generated_at=\S+\s*-->$",
@@ -377,7 +416,7 @@ def section_info(text: str, tool: str, marker_key: str, label: str) -> tuple[boo
     )
     cm = close_marker.search(text)
     if not cm:
-        return (False, 0, "")
+        return None
     # The close marker already pins tool+kind+label, so the section start is just
     # the nearest `## {tool} …` heading before it. Don't key the heading on the
     # date — weekly headings are keyed on the week, not a daily date. Consume the
@@ -391,13 +430,142 @@ def section_info(text: str, tool: str, marker_key: str, label: str) -> tuple[boo
         if m.start() < cm.start():
             om = m
     if not om:
-        return (True, 0, "(close marker found, open heading missing)")
-    body = text[om.end():cm.start()]
+        return None
+    return text[om.end():cm.start()]
+
+
+def section_info(text: str, tool: str, marker_key: str, label: str) -> tuple[bool, int, str]:
+    """Find `<!-- {tool}:{marker_key}={label} ... -->` and its matching `## {tool} …` heading.
+
+    `marker_key`/`label` are "daily"/"YYYY-MM-DD" or "weekly"/"YYYY-W##", matching the
+    marker each sibling emits (see vault-review's vault.py).
+
+    Returns (present, line_count_inside, note).
+    """
+    # Distinguish "no close marker" (absent) from "close marker but no heading"
+    # (present-but-malformed) — section_body() returns None for both, so re-check
+    # the close marker to keep section_info's two distinct return shapes.
+    body = section_body(text, tool, marker_key, label)
+    if body is None:
+        close_marker = re.compile(
+            rf"^<!--\s*{re.escape(tool)}:{re.escape(marker_key)}={re.escape(label)}\s+generated_at=\S+\s*-->$",
+            re.MULTILINE,
+        )
+        if close_marker.search(text):
+            return (True, 0, "(close marker found, open heading missing)")
+        return (False, 0, "")
     line_count = sum(1 for line in body.splitlines() if line.strip())
     note = ""
     if "0 captures" in body or "no captures in window" in body:
         note = "0 captures"
     return (True, line_count, note)
+
+
+def renderer_bracket_body(text: str, date: dt.date) -> str | None:
+    """The text inside the renderer's begin/end bracket for ``date``.
+
+    The new renderer (ADR-002) is the SINGLE writer of the agent-review section
+    and wraps ALL its sections in one contiguous pair (renderer/src/
+    checkin_renderer/compose.py):
+      begin: ``<!-- checkin-renderer:begin daily={D} -->``   (no generated_at)
+      end:   ``<!-- checkin-renderer:end daily={D} generated_at={ts} -->``
+    It also STRIPS the legacy per-section ``agent-review:report_date=…`` marker
+    (sections/agent.py → _LEGACY_MARKER_RE), so there is NO per-section marker to
+    key on — the bracket is the only structural anchor.
+
+    Returns the bytes between the begin and end markers (markers excluded), or
+    None when the bracket for ``date`` is absent — the renderer didn't run /
+    nothing to assert here (renderer liveness is separately PG-monitored).
+    """
+    iso = re.escape(date.isoformat())
+    begin = re.compile(rf"^<!--\s*checkin-renderer:begin\s+daily={iso}\s*-->$", re.MULTILINE)
+    end = re.compile(
+        rf"^<!--\s*checkin-renderer:end\s+daily={iso}\s+generated_at=\S+\s*-->$",
+        re.MULTILINE,
+    )
+    bm = begin.search(text)
+    if not bm:
+        return None
+    em = end.search(text, bm.end())
+    if not em:
+        return None
+    return text[bm.end():em.start()]
+
+
+def assess_agent_artifact(
+    yesterday_text: str,
+    yesterday_pt: dt.date,
+    pg_runs: dict[str, RunRow] | None,
+) -> str | None:
+    """Warn when note D's RENDERED agent-review section is the placeholder while a
+    real report exists for D (auto-review-byp).
+
+    The motivating defect (OMG-002, 2026-06-18): the doctor reports agent-review
+    'ok' off the producer's ops.job_runs STATUS, but the consumer ARTIFACT — the
+    rendered note — still held the `_no agent-review report row for D_` placeholder.
+    Producer status is liveness, not correctness; this asserts the artifact.
+
+    Extraction targets the REAL renderer bracket (ADR-002 / renderer_bracket_body):
+    the renderer is the single writer and emits one ``checkin-renderer:begin/end
+    daily=D`` pair around its sections, stripping any legacy per-section marker. We
+    scope the placeholder test to that bracket — robust because the placeholder is
+    agent-review-specific and date-pinned (``_no agent-review report row for D_``).
+    A SUCCESSFUL agent-review heading is keyed to the report's generated-at
+    (e.g. ``## agent-review — 2026-06-20 00:17``), NOT to D, so we do NOT locate
+    the section by matching D in a heading. No bracket → return None (renderer
+    didn't run / nothing to assert; renderer liveness is separately PG-monitored).
+
+    CRITICAL quiet-day guard: a legitimate zero-session day renders the IDENTICAL
+    placeholder string (the producer records status='ok' with reports=0 and writes
+    NO daily_reports[D] row). So the warning must NOT key on note text alone. It
+    fires only when BOTH:
+      (1) the placeholder is present in note D's renderer bracket, AND
+      (2) a real report exists for D — the agent-review run's summary reports `>= 1`
+          report persisted for a run that covered D.
+    On a quiet day (placeholder present, reports=0) it stays silent → doctor green.
+    PG unreachable (pg_runs is None) → no signal → stay silent (don't false-alarm).
+
+    Returns the warning markdown line, or None when there's nothing to flag.
+    """
+    body = renderer_bracket_body(yesterday_text, yesterday_pt)
+    placeholder = f"{AGENT_PLACEHOLDER_PREFIX}{yesterday_pt.isoformat()}_"
+    if body is None or placeholder not in body:
+        return None  # no renderer bracket, or it holds a real report — fine
+    if pg_runs is None:
+        return None  # degraded: can't tell a defect from a quiet day → don't guess
+    row = pg_runs.get("agent-review")
+    if row is None:
+        return None  # producer never ran for us to compare against
+    if not _producer_reported_report_for(row, yesterday_pt):
+        return None  # quiet day: placeholder is CORRECT (no report row exists) → green
+    return (
+        f"_⚠️ agent-review artifact mismatch: note for {yesterday_pt.isoformat()} shows the "
+        f"`{AGENT_PLACEHOLDER_PREFIX.strip('_').strip()} …` placeholder, but the producer "
+        f"persisted a report for that day (job_runs reports≥1) — the rendered note is stale "
+        f"(re-run the renderer; see the hg6.11 catch-up)._"
+    )
+
+
+def _producer_reported_report_for(row: RunRow, date: dt.date) -> bool:
+    """True only when the agent-review run-row UNAMBIGUOUSLY persisted a report for
+    exactly ``date`` — a single-date run covering D that persisted ≥1 report.
+
+    Reads the run's summary {"reports": N, "dates": [...]} (agent-review's
+    cli._run_summary). The catch (roborev review, auto-review-byp): `dates` lists
+    every date the run REQUESTED and `reports` is only an aggregate persisted
+    count — neither attributes a report to a specific day. A multi-date backfill
+    (e.g. `agent-review run 06-18..06-19`) that persisted 06-18 but left D=06-19
+    quiet would, under a plain `D in dates` test, be misread as "D has a report"
+    and false-positive D's CORRECT placeholder. So we assert ONLY on the
+    unambiguous single-date shape `dates == [D]` with reports≥1 — the normal
+    nightly run (one day, run the next morning). When we can't be certain (a
+    multi-date run, or `dates` absent on an older row) we stay silent: the
+    quiet-day guard's whole job is to never false-alarm a legitimately-empty day."""
+    reports = row.summary.get("reports")
+    if not isinstance(reports, int) or reports < 1:
+        return False
+    dates = row.summary.get("dates")
+    return isinstance(dates, list) and dates == [date.isoformat()]
 
 
 def find_tracebacks(lines: list[str]) -> list[dict[str, str]]:
@@ -596,12 +764,12 @@ def _pg_result_cell(r: JobReport) -> str:
     return cell
 
 
-def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int, self_liveness: tuple[dt.date | None, list[dt.date]]) -> str:
+def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int, self_liveness: tuple[dt.date | None, list[dt.date]], agent_artifact_warning: str | None = None) -> str:
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     expected = [r for r in reports if r.skipped_reason is None]
     fired = [r for r in expected if r.fired]
     yesterday = today_pt - dt.timedelta(days=1)
-    
+
     tb_count = len(tracebacks)
     reject_cell = f"{push_rejections} push rejections" if push_rejections == 0 else f"⚠️ {push_rejections} push rejections"
     summary = f"_{len(fired)}/{len(expected)} jobs healthy · {tb_count} tracebacks · {reject_cell} in log tail_"
@@ -667,6 +835,11 @@ def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list
     ]
     if degraded_line:
         parts += ["", degraded_line]
+    if agent_artifact_warning:
+        # The artifact mismatch (auto-review-byp): producer status was 'ok' but the
+        # rendered note still holds the placeholder — surfaced near the top so it's
+        # not lost below the per-job table (the OMG-002 defect went unnoticed there).
+        parts += ["", agent_artifact_warning]
     parts += [
         "",
         format_self_liveness(today_pt, last_present, gaps),
@@ -842,7 +1015,11 @@ def main() -> int:
     reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text, tracebacks, pg_runs=pg_runs)
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)
-    section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness)
+    # Artifact assertion (auto-review-byp): is the rendered agent-review section in
+    # yesterday's note the placeholder despite the producer persisting a report?
+    # Quiet-day-safe — see assess_agent_artifact.
+    agent_artifact_warning = assess_agent_artifact(yesterday_text, yesterday_pt, pg_runs)
+    section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness, agent_artifact_warning)
     moving_pieces = render_moving_pieces(today_pt)
 
     if args.dry_run:
