@@ -22,22 +22,6 @@ sys.modules[_loader.name] = doctor  # @dataclass resolves cls.__module__ here
 _loader.exec_module(doctor)
 
 
-# ─── week-label math ──────────────────────────────────────────────────────────
-
-
-def test_reported_week_label_is_last_week():
-    # Monday 2026-05-25 is in ISO week 2026-W22; the weekly cron runs
-    # `last-week` on Monday, so the recap it writes covers the just-ended
-    # 2026-W21 (Mon–Sun).
-    assert doctor.iso_week_label(dt.date(2026, 5, 25)) == "2026-W22"
-    assert doctor.reported_week_label(dt.date(2026, 5, 25)) == "2026-W21"
-
-
-def test_weekly_note_path_uses_reported_label():
-    p = doctor.weekly_note_path(Path("/v"), "2026-W21")
-    assert p == Path("/v/journal/weekly/2026-W21.md")
-
-
 # ─── section_info: weekly (the auto-review-87e regression) ─────────────────────
 
 WEEKLY_NOTE = """\
@@ -117,7 +101,7 @@ def test_assess_jobs_vault_review_jobs_are_pg_monitored():
     # line in the log is now irrelevant.
     monday = dt.date(2026, 5, 25)
     log = ["[main deadbee] vault-review: weekly recap 2026-05-25T17:01:01Z\n"]
-    reports = doctor.assess_jobs(log, monday, yesterday_checkin_text="", weekly_text="", tracebacks=[])
+    reports = doctor.assess_jobs(log, monday, yesterday_checkin_text="", tracebacks=[])
     by_name = {r.name: r for r in reports}
     for name in ("vault-review daily", "vault-review weekly"):
         assert by_name[name].pg is True
@@ -160,7 +144,7 @@ def test_vault_review_crash_surfaces_in_diagnostics():
     assert len(tbs) == 1
     assert tbs[0]["tool"] == "vault-review"
     assert "HTTPError" in tbs[0]["summary"]
-    reports = doctor.assess_jobs(log, today, "", "", tbs)
+    reports = doctor.assess_jobs(log, today, "", tbs)
     out = doctor.render_section(today, reports, tbs, 0, (today - dt.timedelta(days=1), []))
     assert "Tracebacks in log tail" in out
     assert "vault-review" in out and "HTTPError" in out
@@ -192,7 +176,7 @@ def test_assess_jobs_pg_writers_now_monitored():
     # agent-review commit line in the log is now irrelevant — it's a PG job.
     today = dt.date(2026, 5, 31)
     log = ["[main deadbee] agent-review: daily report 2026-05-31T21:01:01Z\n"]
-    reports = doctor.assess_jobs(log, today, yesterday_checkin_text="", weekly_text="", tracebacks=[])
+    reports = doctor.assess_jobs(log, today, yesterday_checkin_text="", tracebacks=[])
     by_name = {r.name: r for r in reports}
     assert "memex-review daily" not in by_name        # dissolved (hg6.4)
     assert "vault-review daily" in by_name             # now PG-monitored (2vv)
@@ -269,7 +253,7 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
     # yesterday's check-in is MISSING the doctor's own section
     yesterday_text = "# check-in — 2026-05-30\n\n## vault-review — 2026-05-30\n"
     reports = doctor.assess_jobs(
-        [], today, yesterday_checkin_text=yesterday_text, weekly_text="", tracebacks=[]
+        [], today, yesterday_checkin_text=yesterday_text, tracebacks=[]
     )
     doc = next(r for r in reports if r.name == "auto-review-doctor daily")
     assert doc.fired is True  # this very run
@@ -281,7 +265,7 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
         "- all good\n\n<!-- auto-review-doctor:daily=2026-05-30 generated_at=2026-05-31T05:01:00Z -->\n"
     )
     reports2 = doctor.assess_jobs(
-        [], today, yesterday_checkin_text=present_text, weekly_text="", tracebacks=[]
+        [], today, yesterday_checkin_text=present_text, tracebacks=[]
     )
     doc2 = next(r for r in reports2 if r.name == "auto-review-doctor daily")
     assert doc2.section_present is True
@@ -341,7 +325,7 @@ def _runrow(job_name: str, finished: dt.datetime, status: str = "ok", cost=None)
 
 
 def _pg_reports(pg_runs, today=dt.date(2026, 6, 13)):
-    return doctor.assess_jobs([], today, "", "", [], pg_runs=pg_runs, now_utc=NOW)
+    return doctor.assess_jobs([], today, "", [], pg_runs=pg_runs, now_utc=NOW)
 
 
 def test_rows_to_runmap_parses_and_skips_malformed():
@@ -374,8 +358,11 @@ def test_assess_pg_job_fresh_with_cost():
 
 
 def test_assess_pg_job_renderer_day_old_row_is_fresh():
-    # The renderer (00:51) runs AFTER the 00:31 doctor, so its freshest row is
-    # ~24h old at doctor time — still within the 26h window, not overdue.
+    # The renderer now runs BEFORE the doctor (an earlier phase of the ordered
+    # run-checkin-nightly chain, doctor LAST), so on a healthy night its freshest
+    # row is minutes old. The 26h window still tolerates a slow/in-flight nightly
+    # run that falls back to yesterday's ~24h-old row — modelled here — without
+    # flagging overdue.
     finished = NOW - dt.timedelta(hours=23, minutes=40)
     runs = {"checkin-renderer-daily": _runrow("checkin-renderer-daily", finished)}
     rr = next(r for r in _pg_reports(runs) if r.name == "check-in renderer daily")
@@ -447,7 +434,7 @@ WEEKLY = "vault-review-weekly"
 
 
 def _weekly_report(pg_runs, today, now_utc):
-    reports = doctor.assess_jobs([], today, "", "", [], pg_runs=pg_runs, now_utc=now_utc)
+    reports = doctor.assess_jobs([], today, "", [], pg_runs=pg_runs, now_utc=now_utc)
     return next(r for r in reports if r.name == "vault-review weekly")
 
 

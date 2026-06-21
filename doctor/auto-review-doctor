@@ -91,7 +91,6 @@ class Job:
     commit_regex: re.Pattern[str] | None = None
     marker_tool: str = ""
     marker_key: str = ""
-    is_weekly: bool = False
     # PG path: when pg_job_name is set, liveness is "is the latest ops.job_runs
     # row younger than pg_interval_hours?" instead of log+marker.
     pg_job_name: str = ""
@@ -645,7 +644,6 @@ def assess_jobs(
     log_lines: list[str],
     today_pt: dt.date,
     yesterday_checkin_text: str,
-    weekly_text: str,
     tracebacks: list[dict[str, str]],
     pg_runs: dict[str, RunRow] | None = None,
     now_utc: dt.datetime | None = None,
@@ -664,8 +662,8 @@ def assess_jobs(
             else:
                 reports.append(assess_pg_job(job, today_pt, pg_runs, now_utc))
             continue
-        name, hhmm, regex, sibling_tool, is_weekly, marker_key = (
-            job.name, job.hhmm, job.commit_regex, job.marker_tool, job.is_weekly, job.marker_key,
+        name, hhmm, regex, sibling_tool, marker_key = (
+            job.name, job.hhmm, job.commit_regex, job.marker_tool, job.marker_key,
         )
         if sibling_tool == "auto-review-doctor":
             # Self-row. We can't see our own commit in the log yet (it happens
@@ -702,18 +700,10 @@ def assess_jobs(
         ts_pt = ts_utc.astimezone(PT)
         fired_today = ts_pt.date() == today_pt
         fired_at = ts_pt.strftime("%H:%M") if fired_today else f"({ts_pt.date().isoformat()})"
-        if is_weekly:
-            # The weekly cron runs `run-weekly last-week` on Monday, writing a
-            # section for the ISO week that just ended (Mon–Sun), into
-            # journal/weekly/YYYY-W##.md keyed `:weekly=YYYY-W##`.
-            present, lines, note = section_info(
-                weekly_text, sibling_tool, marker_key, reported_week_label(today_pt)
-            )
-        else:
-            yesterday = today_pt - dt.timedelta(days=1)
-            present, lines, note = section_info(
-                yesterday_checkin_text, sibling_tool, marker_key, yesterday.isoformat()
-            )
+        yesterday = today_pt - dt.timedelta(days=1)
+        present, lines, note = section_info(
+            yesterday_checkin_text, sibling_tool, marker_key, yesterday.isoformat()
+        )
         reports.append(JobReport(
             name=name, expected_hhmm=hhmm, fired=fired_today,
             fired_at_pt=fired_at, section_present=present, section_lines=lines,
@@ -897,22 +887,6 @@ def ensure_checkin(checkin_path: Path, date: dt.date) -> str:
     )
 
 
-def iso_week_label(date: dt.date) -> str:
-    iso_year, iso_week, _ = date.isocalendar()
-    return f"{iso_year}-W{iso_week:02d}"
-
-
-def reported_week_label(today: dt.date) -> str:
-    """ISO-week label the Monday weekly recap covers: `last-week` relative to the
-    run day, matching `vault-review run-weekly last-week`. On Monday this is the
-    Mon–Sun week that just ended."""
-    return iso_week_label(today - dt.timedelta(weeks=1))
-
-
-def weekly_note_path(vault: Path, week_label: str) -> Path:
-    return vault / "journal" / "weekly" / f"{week_label}.md"
-
-
 def checkin_path(checkin_dir: Path, date: dt.date) -> Path:
     """Path to a daily check-in note, nested by month (auto-review-d4c).
 
@@ -1005,14 +979,12 @@ def main() -> int:
     checkin_dir = args.vault / "journal" / "checkins"
     yesterday_path = checkin_path(checkin_dir, yesterday_pt)
     today_path = checkin_path(checkin_dir, today_pt)
-    weekly_path = weekly_note_path(args.vault, reported_week_label(today_pt))
 
     yesterday_text = yesterday_path.read_text(encoding="utf-8") if yesterday_path.exists() else ""
-    weekly_text = weekly_path.read_text(encoding="utf-8") if weekly_path.exists() else ""
 
     tracebacks = find_tracebacks(log_lines)
     pg_runs = query_latest_runs(os.environ.get(PG_DSN_ENV))
-    reports = assess_jobs(log_lines, today_pt, yesterday_text, weekly_text, tracebacks, pg_runs=pg_runs)
+    reports = assess_jobs(log_lines, today_pt, yesterday_text, tracebacks, pg_runs=pg_runs)
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)
     # Artifact assertion (auto-review-byp): is the rendered agent-review section in
