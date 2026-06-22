@@ -18,11 +18,17 @@ When the user wants to record a decision (or you invoke `bd decision record`):
    - **Affects**: Issue IDs this decision impacts (optional)
    - **Priority**: How important (default P2)
 
-2. Create the issue with structured description:
+2. Create the issue using the beads MCP `create` tool with `type: decision`,
+   passing the title and the structured description below as tool arguments.
+   Do NOT build a shell `bd create` command that interpolates the user-supplied
+   title or description text — passing them as tool arguments avoids shell
+   command/heredoc injection. (If you must use the CLI, pass the description via
+   `--body-file <path>` — or `--body-file -` to read from stdin — never an inline
+   `"<title>"` or a `$(cat <<EOF ...)` heredoc.)
 
-```bash
-bd create "<title>" --type decision \
-  --description "$(cat <<'EOF'
+   Description content:
+
+```markdown
 ## Decision
 
 <one-sentence summary of what was decided>
@@ -39,8 +45,6 @@ bd create "<title>" --type decision \
 ## Affects
 
 - <issue IDs or area descriptions>
-EOF
-)"
 ```
 
 3. If `--affects` issue IDs were provided, link them:
