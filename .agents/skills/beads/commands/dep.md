@@ -11,7 +11,8 @@ Manage dependencies between beads issues.
   - $1: "add"
   - $2: From issue ID
   - $3: To issue ID
-  - $4: Dependency type (blocks, related, parent-child, discovered-from)
+  - Flags:
+    - `--type`: Dependency type (blocks, related, parent-child, discovered-from); defaults to `blocks`
 
 - **remove**: Remove a dependency
   - $1: "remove"
@@ -32,7 +33,7 @@ Manage dependencies between beads issues.
 
 ## Dependency Types
 
-- **blocks**: Hard blocker (from blocks to) - affects ready queue
+- **blocks**: Hard blocker (to blocks from) - affects ready queue
 - **related**: Soft relationship - for context only
 - **parent-child**: Epic/subtask relationship
 - **discovered-from**: Track issues found during work
