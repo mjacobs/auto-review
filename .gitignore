@@ -24,3 +24,9 @@ uv.lock
 
 # roborev snapshots
 /.roborev/
+
+# DB seeds carry absolute local home paths — keep the real seed out of this
+# public repo; the README + sanitized example stay tracked.
+/db/seed/*
+!/db/seed/README.md
+!/db/seed/projects.seed.example.sql
