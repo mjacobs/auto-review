@@ -21,3 +21,6 @@ uv.lock
 
 # Beads task tracker (local-only)
 .beads/
+
+# roborev snapshots
+/.roborev/
