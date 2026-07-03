@@ -35,7 +35,7 @@ doctor/README.md:openclaw
 doctor/health-watch:portainer
 
 # Timing-dependency comment naming the external push source; same class of
-# leak as the doctor JOBS list above, not yet scrubbed.
+# content leak as the (now-removed) doctor JOBS list, not yet scrubbed.
 scripts/run-checkin-nightly.sh:baox
 
 # The design spec itself quoting the `.223` pattern while describing the
