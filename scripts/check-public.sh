@@ -67,11 +67,13 @@ declare -a EXCLUDE_GLOBS=(
   '.git/*'
   'scripts/check-public.sh'
   'scripts/check-public.allow'
+  'scripts/check-public.test.sh'   # the guard's own test — contains fixture leaks
 )
 
 is_excluded() {
   local f="$1" glob
   for glob in "${EXCLUDE_GLOBS[@]}"; do
+    # shellcheck disable=SC2053  # RHS is an intentional glob pattern, not a literal
     [[ "$f" == $glob ]] && return 0
   done
   return 1
@@ -84,7 +86,7 @@ declare -a ALLOW_REGEX=()
 if [[ -f "$allow_file" ]]; then
   while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     stripped="${raw_line%%#*}"                # strip trailing comments
-    stripped="$(echo -n "$stripped" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    stripped="$(printf '%s' "$stripped" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
     [[ -z "$stripped" ]] && continue
     if [[ "$stripped" == *:* ]]; then
       ALLOW_PATH+=("${stripped%%:*}")
@@ -128,7 +130,11 @@ for entry in "${LEAK_PATTERNS[@]}"; do
     printf '%s:%s: %s\n' "$file" "$line" "$reason"
     printf '  -> see %s\n' "$spec_doc"
     fail=1
-  done < <(grep -nHE -- "$regex" "${scan_files[@]}" 2>/dev/null)
+  # Batch files through xargs so a large tree can't exceed ARG_MAX and make grep
+  # error out: with stderr hidden that would silently yield no matches and fail
+  # the guard OPEN. xargs splits into as many grep calls as needed; -H keeps
+  # every line prefixed file:line so the parse below is unchanged (roborev 1316).
+  done < <(printf '%s\0' "${scan_files[@]}" | xargs -0 -r grep -nHE -- "$regex" 2>/dev/null)
 done
 
 if [[ "$fail" -ne 0 ]]; then
