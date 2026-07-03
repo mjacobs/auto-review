@@ -230,7 +230,14 @@ def _upsert(bundle: SessionBundle, digest: Digest, usage: dict[str, int]) -> Non
 # ─── LLM call ────────────────────────────────────────────────────────────────
 
 
-@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=2, max=30))
+# reraise=True so the ORIGINAL exception (e.g. the real 404 RuntimeError)
+# propagates after retries are exhausted, instead of tenacity's opaque
+# RetryError that masked the 2026-06 digest outage for ~3 days.
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    reraise=True,
+)
 def _call_llm(bundle: SessionBundle) -> tuple[Digest, dict[str, int]]:
     s = get_settings()
     result = llm.complete(

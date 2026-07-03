@@ -198,7 +198,13 @@ def _load_system_prompt() -> str:
     return files("agent_review.prompts").joinpath("synth_system.md").read_text()
 
 
-@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=2, max=30))
+# reraise=True so the underlying exception (real 404/RuntimeError) propagates
+# after retries are exhausted rather than tenacity's opaque RetryError wrapper.
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    reraise=True,
+)
 def _call_llm(
     date: dt.date,
     pairs: list[tuple[SessionBundle, Digest]],

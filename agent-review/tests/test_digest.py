@@ -120,6 +120,33 @@ def test_artifact_key_aliases_are_coerced():
     assert d.artifacts[1].ref == "abc123"
 
 
+def test_call_llm_reraises_underlying_error(monkeypatch: pytest.MonkeyPatch):
+    """After retries are exhausted, the ORIGINAL exception (the real 404/
+    RuntimeError) must propagate — not tenacity's opaque RetryError, which
+    masked the 2026-06 digest outage for ~3 days. reraise=True makes this so."""
+    from agent_review.config import Settings
+
+    s = Settings(_env_file=None, PG_DSN="postgresql://u@h:5432/db")  # type: ignore[call-arg]
+    monkeypatch.setattr(digest_mod, "get_settings", lambda: s)
+    monkeypatch.setattr(digest_mod, "_load_system_prompt", lambda: "SYS")
+    monkeypatch.setattr(digest_mod, "_render_user_payload", lambda b: "USER")
+
+    calls: list[int] = []
+
+    def boom(**kwargs):
+        calls.append(1)
+        raise RuntimeError("real 404: model not found")
+
+    monkeypatch.setattr(digest_mod.llm, "complete", boom)
+    # Don't actually sleep between the 4 attempts.
+    monkeypatch.setattr(digest_mod._call_llm.retry, "wait", lambda *_a, **_k: 0)
+
+    with pytest.raises(RuntimeError, match="real 404: model not found"):
+        digest_mod._call_llm(_bundle())
+    # all 4 attempts ran, then the raw RuntimeError surfaced (no RetryError)
+    assert len(calls) == 4
+
+
 def test_render_user_payload_includes_folded_subagent_transcript():
     parent = _bundle("parent")
     child = _bundle("child")
