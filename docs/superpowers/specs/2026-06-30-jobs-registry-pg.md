@@ -17,9 +17,9 @@ and only one of them is content:
 
 - **Registry** — `name`, `host`, `cadence`, `writes`, `monitored`
   (+ `expected_interval`, `retired_at`). This is the moving-pieces dashboard,
-  and it is *content*: rows name internal hosts (`"auto-review LXC (.223)"`,
-  `"baox (workstation)"`, …). → belongs in `ops.jobs`, which `0001` already
-  shapes exactly for it.
+  and it is *content*: rows name internal hosts and schedules (a runner host
+  with its IP suffix, a workstation name, …). → belongs in `ops.jobs`, which
+  `0001` already shapes exactly for it.
 - **Liveness mechanics** — the fields the doctor *executes* to decide "overdue":
   the **marker path** (`hhmm`, `commit_regex`, `marker_tool`, `marker_key`),
   the **PG path** (`pg_job_name`, `pg_interval_hours`), and the **PG-weekly
@@ -66,7 +66,7 @@ holds the *non-data* mechanics.
    mechanism/content boundary the epic draws puts executable logic in the repo.
 2. **They leak nothing** — so there is no reason to hide them in PG. Apply the
    epic's classification rule ("if removing this line would only matter to *this
-   operator's* machines, it is content"): `host = "auto-review LXC (.223)"`
+   operator's* machines, it is content"): `host = "<runner-host> (<ip-suffix>)"`
    matters to one operator → content → PG. A commit-line regex, or
    `weekday = Monday`, matters to *any* deployment of this stack → mechanism →
    code. Same rule, opposite answers — which is exactly why they split.
