@@ -7,10 +7,6 @@
 # next to any new entry. See:
 #   docs/superpowers/specs/2026-06-27-infra-content-separation-design.md
 
-# Real topology — hosts, IPs, full cron chain, TZ. Pending move to the vault
-# (auto-review-6mf.3, Tier-2 — the vault-side half of the doc genericization).
-docs/schedules.md
-
 # Canonical JOBS list — hosts/IPs enumerated per job until the registry moves
 # to PG (auto-review-6mf.1).
 doctor/auto-review-doctor

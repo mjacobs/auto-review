@@ -1,7 +1,12 @@
 # Schedules & job dependencies
 
-Source of truth for the auto-review cron layout on the **auto-review LXC**
-(`auto-review@192.168.5.223`, TZ `America/Los_Angeles` — **all times PT**).
+Source of truth for the auto-review cron **mechanism** — the nightly-chain
+design, ordering rules, and change procedure. The **concrete deployment** (the
+runner host, its exact crontab, and backup names) lives in the operator runbook
+(the auto-review runner doc under vault `reference/homelab/services/`), which is
+authoritative for the live schedule. Times below are illustrative PT (the deploy
+TZ default,
+`America/Los_Angeles`); `AUTO_REVIEW_RUNNER` stands in for the runner host.
 
 The crontab is **hand-maintained**: `scripts/deploy.sh` and the doctor
 deliberately never auto-edit it (AGENTS.md). To change it, edit on the box with
@@ -20,7 +25,7 @@ would be done (the race that broke the 06-18 note; `auto-review-bhp`, OMG-002).
 `t_a → t_b` is the data window a report covers.
 
 > **Rollout status (2026-06-19):** the driver is committed
-> (`scripts/run-checkin-nightly.sh`); deploying it to `.223:~/.local/bin` and
+> (`scripts/run-checkin-nightly.sh`); deploying it to `AUTO_REVIEW_RUNNER:~/.local/bin` and
 > the crontab cutover — replacing the five staggered lines with the one driver
 > line — are the remaining gated steps. Until the cutover lands, the box still
 > runs the prior staggered layout.
@@ -85,7 +90,7 @@ follow-up.
 ## Dependency graph
 
 ```
- baox → agentsview PG  (push ~23:55 + 00:00)        vault-sync (every 5 min)
+ workstation → agentsview PG (push ~23:55 + 00:00)  vault-sync (every 5 min)
         │ ~8 min margin                                    │ keeps vault current
         ▼                                                  
  ┌─ agent-review ─┐  writes daily_reports[D] (PG)          
@@ -99,7 +104,7 @@ There are **two real serial buffers** and one ordering rule — everything else 
 arbitrary:
 
 1. **agentsview push → `agent-review` (~8 min).** agent-review reads agentsview
-   PG, which baox pushes at ~23:55 + the 00:00 `*/30` boundary. It must read
+   PG, which the workstation pushes at ~23:55 + the 00:00 `*/30` boundary. It must read
    *after* the prior day's sessions land, or the daily report is silently
    incomplete (and it won't re-run). This buffer was 21 min pre-tightening;
    trimmed to ~8. **Treat as a health threshold:** if the push isn't done in
