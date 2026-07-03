@@ -583,6 +583,40 @@ def test_main_incomplete_registry_degrades_not_authoritative():
         assert not mp.exists()                    # dashboard NOT fabricated/half-filled
 
 
+def test_main_degraded_forces_unknown_even_if_job_runs_readable():
+    # Edge case (roborev job 1352): ops.jobs is incomplete but ops.job_runs is
+    # readable. The degraded skeleton rows carry a 0h window, so without guarding
+    # pg_runs the PG jobs would false-flag "overdue" against real run rows. The
+    # registry-degraded branch must force pg_runs=None so they stay "unknown".
+    today = dt.date(2026, 6, 13)
+    partial = [doctor.JobRow("memex-sync", "runner", ":05 hourly",
+                             "memex PG schema", True, 2.0)]  # incomplete
+    runmap = {"agent-review": doctor.RunRow(
+        job_name="agent-review",
+        finished_at=dt.datetime(2026, 6, 13, tzinfo=doctor.UTC),
+        status="ok", cost_usd=None, summary={})}
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        log = Path(tmp) / "cron.log"
+        log.write_text("", encoding="utf-8")
+        argv = [
+            "auto-review-doctor", "--vault", str(vault),
+            "--log", str(log), "--date", today.isoformat(),
+        ]
+        env = {**os.environ, doctor.PG_DSN_ENV: "postgresql://u@h/db"}
+        with mock.patch.object(doctor, "query_registry", return_value=partial), \
+                mock.patch.object(doctor, "query_latest_runs", return_value=runmap), \
+                mock.patch.object(doctor.sys, "argv", argv), \
+                mock.patch.dict(doctor.os.environ, env, clear=True):
+            rc = doctor.main()
+        assert rc == 0
+        text = doctor.checkin_path(vault / "journal" / "checkins", today).read_text(encoding="utf-8")
+        # agent-review shows as unknown despite a readable run row — NOT overdue
+        assert "agent-review" in text
+        assert "unknown" in text
+        assert "overdue" not in text
+
+
 # ─── PG liveness path (auto-review-hg6.8) ─────────────────────────────────────
 
 # 2026-06-13 08:31 UTC ≈ 00:31 PT — when the doctor cron fires.

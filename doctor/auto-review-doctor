@@ -1299,7 +1299,17 @@ def main() -> int:
                 f"job(s): {missing} (seed not applied?). Treating as degraded; "
                 f"moving-pieces not regenerated (the last dashboard stands)._"
             )
-    reports = assess_jobs(jobs, log_lines, today_pt, yesterday_text, tracebacks, pg_runs=pg_runs)
+    # The degraded skeleton rows carry a 0h expected_interval, so judging PG-run
+    # freshness against them would false-flag "overdue" even when ops.job_runs is
+    # readable (the ops.jobs-incomplete-but-job_runs-fine case). Force the
+    # "unknown (no PG)" path unless the registry itself was trustworthy (roborev
+    # job 1352). The artifact check below still uses the real pg_runs — it's
+    # registry-independent.
+    registry_ok = registry is not None and registry_is_complete(registry)
+    reports = assess_jobs(
+        jobs, log_lines, today_pt, yesterday_text, tracebacks,
+        pg_runs=(pg_runs if registry_ok else None),
+    )
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)
     # Artifact assertion (auto-review-byp): is the rendered agent-review section in
