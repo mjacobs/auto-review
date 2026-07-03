@@ -578,7 +578,11 @@ def test_main_incomplete_registry_degrades_not_authoritative():
         assert rc == 0
         text = doctor.checkin_path(vault / "journal" / "checkins", today).read_text(encoding="utf-8")
         assert "registry INCOMPLETE" in text
-        assert "auto-review-doctor" in text      # a missing required job is named
+        # the warning NAMES the full sorted missing-job list (not just the section
+        # heading, where "auto-review-doctor" always appears) so it can't silently
+        # stop naming them (roborev job 1358). partial=[memex-sync] → 5 missing.
+        assert ("missing required monitored job(s): agent-review, auto-review-doctor, "
+                "checkin-renderer-daily, vault-review-daily, vault-review-weekly") in text
         mp = vault / "reference" / "auto-review" / "moving-pieces.md"
         assert not mp.exists()                    # dashboard NOT fabricated/half-filled
 

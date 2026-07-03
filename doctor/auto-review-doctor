@@ -1036,9 +1036,14 @@ def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list
 
     # Degraded PG liveness: the DSN is missing or PG was unreachable, so the
     # PG-monitored jobs (memex-sync, agent-review, renderer) can't be checked.
+    # When the registry itself is degraded (registry_unavailable is set), the
+    # registry line below is the authoritative explanation and the PG jobs were
+    # forced to unknown regardless of whether ops.job_runs was readable — so
+    # suppress this banner rather than misattribute the cause to "no DSN or psql"
+    # (roborev job 1358).
     degraded = [r for r in reports if r.pg and r.pg_status == "degraded"]
     degraded_line = ""
-    if degraded:
+    if degraded and not registry_unavailable:
         names = ", ".join(r.name for r in degraded)
         degraded_line = (
             f"_⚠️ PG liveness unavailable (no {PG_DSN_ENV} or psql) — {names} "
