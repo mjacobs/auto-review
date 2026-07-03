@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import datetime as dt
 import socket
+import warnings
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Substrings (case-insensitive) that mark a model id as Claude-family, i.e.
+# routable by `claude -p --model <id>`. A gateway/api-only id like "local-coder"
+# has none of these and 404s under the claude_cli backend — the misconfig that
+# broke the digest stage for ~3 days in 2026-06 (see _validate_backend_model_coherence).
+_CLAUDE_MODEL_TOKENS = ("claude", "haiku", "sonnet", "opus")
+
+
+def _looks_like_claude_model(model: str) -> bool:
+    """True when ``model`` names a Claude-family model the ``claude`` CLI accepts."""
+    lowered = model.lower()
+    return any(token in lowered for token in _CLAUDE_MODEL_TOKENS)
 
 
 class Settings(BaseSettings):
@@ -80,6 +93,55 @@ class Settings(BaseSettings):
                 "(LLM_BACKEND / LLM_BACKEND_DIGEST / LLM_BACKEND_SYNTH = api). Set a "
                 "key, or use claude_cli to bill the Claude Max subscription instead."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_backend_model_coherence(self) -> Settings:
+        """Fail fast on a claude_cli↔non-Claude-model mismatch; warn on dead
+        api-only knobs.
+
+        Root cause of the 2026-06 digest outage: a package default flip of
+        LLM_BACKEND (api→claude_cli) meant the prod config's
+        MODEL_DIGEST=local-coder (a gateway-only id) was suddenly shelled to
+        `claude -p --model local-coder`, which 404s. Nothing validated the
+        backend↔model pairing, so it surfaced only at runtime — masked by
+        tenacity as an opaque RetryError — and stayed broken for ~3 days. This
+        turns that class of misconfig into a clear startup error.
+        """
+        # Fatal: a stage on claude_cli whose model isn't Claude-recognizable
+        # would 404 on every call. Name the stage, model, and backend.
+        for stage, backend, model in (
+            ("digest", self.digest_backend, self.model_digest),
+            ("synth", self.synth_backend, self.model_synth),
+        ):
+            if backend == "claude_cli" and not _looks_like_claude_model(model):
+                raise ValueError(
+                    f"{stage} stage uses the claude_cli backend but "
+                    f"MODEL_{stage.upper()}={model!r} is not a Claude-recognizable "
+                    f"model (no 'claude'/'haiku'/'sonnet'/'opus' token). "
+                    f"`claude -p --model {model}` would 404. Set a Claude model id, "
+                    f"or set LLM_BACKEND_{stage.upper()}=api to route this stage to a "
+                    f"gateway/local model."
+                )
+
+        # Nudge (not fatal): api-only knobs are set while the api backend is
+        # entirely unused (both stages on claude_cli), so they do nothing. A
+        # non-Claude MODEL_* under claude_cli already raised above, so the only
+        # remaining dead weight here is the api credential/endpoint knobs.
+        if self.digest_backend == "claude_cli" and self.synth_backend == "claude_cli":
+            unused = []
+            if self.llm_base_url is not None:
+                unused.append("LLM_BASE_URL")
+            if self.llm_api_key is not None:
+                unused.append("LLM_API_KEY")
+            if unused:
+                warnings.warn(
+                    f"{', '.join(unused)} set but no stage uses the api backend "
+                    f"(both digest and synth run on claude_cli); these knobs are "
+                    f"ignored. Remove them, or set LLM_BACKEND[_DIGEST|_SYNTH]=api to "
+                    f"use them.",
+                    stacklevel=2,
+                )
         return self
 
     @property

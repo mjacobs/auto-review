@@ -4,6 +4,7 @@ api-key wiring in agent_review.config."""
 from __future__ import annotations
 
 import json
+import warnings
 
 import pytest
 
@@ -340,3 +341,73 @@ def test_complete_honors_explicit_backend(monkeypatch: pytest.MonkeyPatch):
         llm.complete(model="m", system_prompt="S", user_content="U",
                      settings=s, backend=s.synth_backend).text == "cli"
     )
+
+
+# ─── backend↔model coherence guard (2026-06 digest-404 incident) ─────────────
+
+
+def test_claude_cli_backend_rejects_non_claude_digest_model():
+    # The exact misconfig that 404'd for ~3 days: MODEL_DIGEST=local-coder (a
+    # gateway-only id) shelled to `claude -p --model local-coder`.
+    with pytest.raises(ValueError, match=r"MODEL_DIGEST='local-coder' is not a Claude"):
+        _settings(LLM_BACKEND="claude_cli", MODEL_DIGEST="local-coder")
+
+
+def test_claude_cli_backend_rejects_non_claude_synth_model():
+    with pytest.raises(ValueError, match=r"MODEL_SYNTH='qwen-coder' is not a Claude"):
+        _settings(LLM_BACKEND="claude_cli", MODEL_SYNTH="qwen-coder")
+
+
+def test_claude_cli_backend_accepts_claude_models():
+    s = _settings(
+        LLM_BACKEND="claude_cli",
+        MODEL_DIGEST="claude-haiku-4-5-20251001",
+        MODEL_SYNTH="claude-sonnet-4-6",
+    )
+    assert s.model_digest == "claude-haiku-4-5-20251001"
+    assert s.model_synth == "claude-sonnet-4-6"
+
+
+def test_claude_model_token_match_is_case_insensitive():
+    # Any of the family tokens, in any case, marks a model as Claude-routable.
+    for model in ("Claude-3", "HAIKU-x", "my-Opus", "sonnet-latest"):
+        s = _settings(LLM_BACKEND="claude_cli", MODEL_DIGEST=model, MODEL_SYNTH=model)
+        assert s.digest_backend == "claude_cli"
+
+
+def test_non_claude_model_is_fine_under_api_backend():
+    # A gateway/local model id is legitimate when its stage runs on the api
+    # backend — the guard must only fire for the claude_cli backend.
+    s = _settings(
+        LLM_BACKEND="claude_cli",
+        LLM_BACKEND_DIGEST="api",
+        MODEL_DIGEST="local-coder",
+        LLM_API_KEY="sk-x",
+    )
+    assert s.digest_backend == "api"
+    assert s.model_digest == "local-coder"
+
+
+def test_warns_on_dead_base_url_when_api_backend_unused():
+    with pytest.warns(UserWarning, match=r"LLM_BASE_URL.*no stage uses the api backend"):
+        _settings(LLM_BACKEND="claude_cli", LLM_BASE_URL="https://gw.example")
+
+
+def test_warns_on_dead_api_key_when_api_backend_unused():
+    with pytest.warns(UserWarning, match=r"LLM_API_KEY.*no stage uses the api backend"):
+        _settings(LLM_BACKEND="claude_cli", LLM_API_KEY="sk-unused")
+
+
+def test_no_dead_knob_warning_when_api_backend_in_use():
+    # A stage genuinely on the api backend uses LLM_API_KEY/LLM_BASE_URL, so the
+    # dead-weight warning must NOT fire (treat any UserWarning as an error).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        s = _settings(
+            LLM_BACKEND="claude_cli",
+            LLM_BACKEND_DIGEST="api",
+            LLM_API_KEY="sk-x",
+            LLM_BASE_URL="https://gw.example",
+            MODEL_DIGEST="local-coder",
+        )
+        assert s.digest_backend == "api"
