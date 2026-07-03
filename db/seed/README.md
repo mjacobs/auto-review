@@ -6,21 +6,28 @@ from the operator's local machine, because their rows carry local-only detail
 [`db/README.md`](../README.md) → *"Registry rows and seeds stay out of this
 public repo"*.
 
-Currently this covers the **projects registry** (`projects.projects`,
-auto-review-8cw.1). The `ops.jobs` registry is seeded separately by the doctor's
-`JOBS` definition (hg6.8).
+This covers two registries, seeded the same way:
+
+- the **projects registry** (`projects.projects`, auto-review-8cw.1); and
+- the **jobs registry** (`ops.jobs`, auto-review-6mf.2 / hg6.8) — the
+  periodic-job moving-pieces registry, whose rows name internal hosts. Its rows
+  used to be `INSERT`ed by `db/migrations/0007`–`0009`; 6mf.2 removed those
+  `INSERT`s and the rows now come from this seed. See
+  [`docs/superpowers/specs/2026-06-30-jobs-registry-pg.md`](../../docs/superpowers/specs/2026-06-30-jobs-registry-pg.md).
 
 ## What's in here
 
 | File | Committed? | Purpose |
 |---|---|---|
-| `projects.seed.sql` | **no — gitignored** | The real, curated seed. Carries absolute home paths. |
-| `projects.seed.example.sql` | yes | Sanitized placeholder rows showing the exact shape. |
+| `projects.seed.sql` | **no — gitignored** | The real, curated projects seed. Carries absolute home paths. |
+| `projects.seed.example.sql` | yes | Sanitized placeholder rows showing the projects shape. |
+| `jobs.seed.sql` | **no — gitignored** | The real jobs registry seed. Carries internal hostnames. |
+| `jobs.seed.example.sql` | yes | Sanitized placeholder rows showing the jobs shape. |
 | `README.md` | yes | This file. |
 
 The `.gitignore` rule ignores everything under `db/seed/` and then allow-lists
-`README.md` and `projects.seed.example.sql`, so a real `projects.seed.sql` can
-never be committed by accident.
+`README.md`, `projects.seed.example.sql`, and `jobs.seed.example.sql`, so a real
+`projects.seed.sql` or `jobs.seed.sql` can never be committed by accident.
 
 ## Authoring / curating the seed
 
@@ -107,5 +114,75 @@ psql "${SEED_DSN:?set PG_DSN or MEMEX_TRIAGE_PG_DSN}" -X -c 'SELECT name, status
 psql "${SEED_DSN:?set PG_DSN or MEMEX_TRIAGE_PG_DSN}" -X -At \
   -c "SELECT has_table_privilege('checkin_renderer', 'projects.projects', 'SELECT');" \
   -c "SELECT has_table_privilege('auto_review_doctor', 'projects.projects', 'SELECT');"
+# both -> t
+```
+
+## The jobs registry seed (`ops.jobs`)
+
+The `ops.jobs` rows — the periodic-job **moving-pieces registry** (name, host,
+cadence, what it writes, whether the doctor monitors it) — are content: they name
+internal hosts. `db/migrations/0007`–`0009` used to `INSERT` them; 6mf.2 removed
+those `INSERT`s and the rows now come from `jobs.seed.sql`. The design rationale —
+where the doctor's non-content liveness *mechanics* live, degraded mode, and this
+ordering — is
+[`docs/superpowers/specs/2026-06-30-jobs-registry-pg.md`](../../docs/superpowers/specs/2026-06-30-jobs-registry-pg.md).
+
+### FK-ordering caveat — apply the jobs seed BEFORE any job runs
+
+`ops.job_runs.job_name` REFERENCES `ops.jobs(name)`, so a job's registry row must
+exist before it writes its first run-row. Apply order:
+
+```
+migrate.sh              # creates ops.jobs (0001); 0007–0009 are recorded no-ops
+psql -f jobs.seed.sql   # seed the registry  ← must precede any monitored job run
+<jobs run>              # first ops.job_runs insert now satisfies the FK
+```
+
+A run-row written in the migrate-but-not-yet-seeded window hits the FK, but those
+writes are best-effort and degrade to a no-op (`db/README.md`: "a failed/absent
+write … degrades to a no-op and never crashes"), so the ordering is a correctness
+**SHOULD** (monitoring is blind until the seed lands), not a crash. The projects
+seed has no such ordering constraint.
+
+### Field conventions (match `db/migrations/0001_ops.sql`)
+
+- `name` — PK and the `job_runs` FK target; the canonical job id.
+- `host` — where it runs; a placeholder in the example, a real host in the seed.
+- `cadence`, `writes` — human-readable strings for the moving-pieces dashboard.
+- `monitored` — does the doctor check this job's liveness? Catalogue unmonitored
+  infra too (`monitored=false`) so coverage gaps show in the dashboard.
+- `expected_interval` — liveness window (overdue when `now() - latest run >`
+  this). **Required when `monitored=true`** and typically NULL when `false` — the
+  table's `CHECK (NOT monitored OR expected_interval IS NOT NULL)` enforces the
+  "monitored ⇒ has a window" half. For the schedule-aware weekly job it is only a
+  sanity bound; the real weekly math lives in the doctor's code (see the design
+  note).
+
+`ON CONFLICT (name) DO UPDATE` re-asserts every registry column, so a re-apply
+converges live rows to the file. `registered_at` is excluded (stamped once);
+`retired_at` is left alone — retiring is a deliberate, separate step (`UPDATE
+ops.jobs SET retired_at = now()`, which keeps `job_runs` history FK-valid), and a
+re-apply must not silently revive a retired job. Upsert-only: it never deletes; a
+removed/renamed job leaves its old row.
+
+### Apply / verify
+
+`ops.jobs` is **admin-curated** — no steady-state role holds INSERT/UPDATE on it
+(the role model in `db/README.md`), so seed it with the **admin/owner** DSN, the
+same one `migrate.sh` uses. Gated like any live-DB write.
+
+```bash
+export PG_DSN='postgresql://<admin>@<pg-host>:5432/<db>'
+# -1 = one transaction (a CHECK violation aborts and leaves no half-state);
+# ON_ERROR_STOP=1 makes a SQL error fatal; -X ignores ~/.psqlrc.
+psql "${PG_DSN:?set PG_DSN (admin/owner)}" -X -v ON_ERROR_STOP=1 -1 -f db/seed/jobs.seed.sql
+
+# verify: rows present (CHECK held, or the apply above would have aborted) and
+# the consumer roles can read the registry (privilege check, db/verify.sh style).
+psql "${PG_DSN:?set PG_DSN}" -X -c \
+  'SELECT name, host, monitored, expected_interval FROM ops.jobs ORDER BY monitored DESC, name;'
+psql "${PG_DSN:?set PG_DSN}" -X -At \
+  -c "SELECT has_table_privilege('auto_review_doctor', 'ops.jobs', 'SELECT');" \
+  -c "SELECT has_table_privilege('checkin_renderer', 'ops.jobs', 'SELECT');"
 # both -> t
 ```
