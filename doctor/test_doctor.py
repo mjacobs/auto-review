@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import os
 import sys
 import tempfile
 from importlib.machinery import SourceFileLoader
@@ -21,6 +22,40 @@ _spec = importlib.util.spec_from_loader(_loader.name, _loader)
 doctor = importlib.util.module_from_spec(_spec)
 sys.modules[_loader.name] = doctor  # @dataclass resolves cls.__module__ here
 _loader.exec_module(doctor)
+
+
+# ─── registry fixture: a leak-free stand-in for the ops.jobs rows ──────────────
+#
+# The registry now comes from PG (ops.jobs), not a hardcoded JOBS list, so tests
+# feed the doctor a synthetic set of rows instead. Hosts are GENERIC ("runner",
+# "workstation") — no real hostnames/IPs/schedules leak into this public repo.
+# The 6 monitored rows mirror production (the marker self-row, the four flat-window
+# PG writers, and the schedule-aware weekly) plus 2 catalogued-but-unmonitored
+# coverage gaps. `_jobs()` reconstructs the Job list exactly as main() does.
+FIXTURE_ROWS = [
+    doctor.JobRow("auto-review-doctor", "runner", "nightly (last phase)",
+                  "check-in health + dead-man row", True, 24.0),
+    doctor.JobRow("memex-sync", "runner", ":05 hourly",
+                  "memex PG schema", True, 2.0),
+    doctor.JobRow("agent-review", "runner", "nightly (~00:08)",
+                  "agent_review PG schema", True, 26.0),
+    doctor.JobRow("checkin-renderer-daily", "runner", "nightly (after agent-review)",
+                  "check-in note bracket", True, 26.0),
+    doctor.JobRow("vault-review-daily", "runner", "nightly (first phase)",
+                  "check-in daily recap", True, 26.0),
+    doctor.JobRow("vault-review-weekly", "runner", "Mondays (~00:08)",
+                  "weekly recap", True, 168.0),
+    # catalogued but NOT liveness-monitored (coverage gaps)
+    doctor.JobRow("nightly-driver", "runner", "00:08 daily",
+                  "drives the ordered phases", False, 0.0),
+    doctor.JobRow("vault-auto-sync", "workstation", "continuous (background)",
+                  "vault git commits/pushes", False, 0.0),
+]
+
+
+def _jobs():
+    """The synthesized Job registry from FIXTURE_ROWS (what main() feeds assess)."""
+    return doctor.synthesize_jobs(FIXTURE_ROWS)
 
 
 # ─── section_info: weekly (the auto-review-87e regression) ─────────────────────
@@ -102,9 +137,9 @@ def test_assess_jobs_vault_review_jobs_are_pg_monitored():
     # line in the log is now irrelevant.
     monday = dt.date(2026, 5, 25)
     log = ["[main deadbee] vault-review: weekly recap 2026-05-25T17:01:01Z\n"]
-    reports = doctor.assess_jobs(log, monday, yesterday_checkin_text="", tracebacks=[])
+    reports = doctor.assess_jobs(_jobs(), log, monday, yesterday_checkin_text="", tracebacks=[])
     by_name = {r.name: r for r in reports}
-    for name in ("vault-review daily", "vault-review weekly"):
+    for name in ("vault-review-daily", "vault-review-weekly"):
         assert by_name[name].pg is True
         assert by_name[name].pg_status == "degraded"  # pg_runs defaulted to None
         assert by_name[name].skipped_reason is None   # no "Mondays only" skip anymore
@@ -145,7 +180,7 @@ def test_vault_review_crash_surfaces_in_diagnostics():
     assert len(tbs) == 1
     assert tbs[0]["tool"] == "vault-review"
     assert "HTTPError" in tbs[0]["summary"]
-    reports = doctor.assess_jobs(log, today, "", tbs)
+    reports = doctor.assess_jobs(_jobs(), log, today, "", tbs)
     out = doctor.render_section(today, reports, tbs, 0, (today - dt.timedelta(days=1), []))
     assert "Tracebacks in log tail" in out
     assert "vault-review" in out and "HTTPError" in out
@@ -177,11 +212,11 @@ def test_assess_jobs_pg_writers_now_monitored():
     # agent-review commit line in the log is now irrelevant — it's a PG job.
     today = dt.date(2026, 5, 31)
     log = ["[main deadbee] agent-review: daily report 2026-05-31T21:01:01Z\n"]
-    reports = doctor.assess_jobs(log, today, yesterday_checkin_text="", tracebacks=[])
+    reports = doctor.assess_jobs(_jobs(), log, today, yesterday_checkin_text="", tracebacks=[])
     by_name = {r.name: r for r in reports}
-    assert "memex-review daily" not in by_name        # dissolved (hg6.4)
-    assert "vault-review daily" in by_name             # now PG-monitored (2vv)
-    for pg_name in ("agent-review daily", "check-in renderer daily", "memex-sync hourly"):
+    assert "memex-review" not in by_name               # dissolved (hg6.4)
+    assert "vault-review-daily" in by_name             # now PG-monitored (2vv)
+    for pg_name in ("agent-review", "checkin-renderer-daily", "memex-sync"):
         assert by_name[pg_name].pg is True
         assert by_name[pg_name].pg_status == "degraded"  # pg_runs defaulted to None
 
@@ -254,9 +289,9 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
     # yesterday's check-in is MISSING the doctor's own section
     yesterday_text = "# check-in — 2026-05-30\n\n## vault-review — 2026-05-30\n"
     reports = doctor.assess_jobs(
-        [], today, yesterday_checkin_text=yesterday_text, tracebacks=[]
+        _jobs(), [], today, yesterday_checkin_text=yesterday_text, tracebacks=[]
     )
-    doc = next(r for r in reports if r.name == "auto-review-doctor daily")
+    doc = next(r for r in reports if r.name == "auto-review-doctor")
     assert doc.fired is True  # this very run
     assert doc.section_present is False  # honestly reports yesterday's gap
 
@@ -266,9 +301,9 @@ def test_assess_jobs_doctor_self_row_reflects_real_yesterday_section():
         "- all good\n\n<!-- auto-review-doctor:daily=2026-05-30 generated_at=2026-05-31T05:01:00Z -->\n"
     )
     reports2 = doctor.assess_jobs(
-        [], today, yesterday_checkin_text=present_text, tracebacks=[]
+        _jobs(), [], today, yesterday_checkin_text=present_text, tracebacks=[]
     )
-    doc2 = next(r for r in reports2 if r.name == "auto-review-doctor daily")
+    doc2 = next(r for r in reports2 if r.name == "auto-review-doctor")
     assert doc2.section_present is True
     # The spaced heading "## auto-review doctor" must match the hyphenated marker
     # tool, so the body line count is real (not the "open heading missing" wart).
@@ -285,7 +320,7 @@ def test_registry_monitored_jobs_have_liveness_config():
     # (pg_job_name + a window — the job_runs writers, hg6.8/2vv). The PG window is
     # either a flat interval (daily) or the schedule-aware weekly check
     # (pg_weekly). Unmonitored infra pretends to have neither.
-    for j in doctor.JOBS:
+    for j in _jobs():
         marker = bool(j.commit_regex and j.marker_tool and j.marker_key and j.hhmm)
         pg = bool(j.pg_job_name and (j.pg_interval_hours > 0 or j.pg_weekly))
         if j.monitored:
@@ -296,8 +331,8 @@ def test_registry_monitored_jobs_have_liveness_config():
 
 
 def test_registry_has_both_monitored_and_coverage_gaps():
-    monitored = [j for j in doctor.JOBS if j.monitored]
-    gaps = [j for j in doctor.JOBS if not j.monitored]
+    monitored = [j for j in _jobs() if j.monitored]
+    gaps = [j for j in _jobs() if not j.monitored]
     # 6 monitored after hg6.8: 3 marker (vault-review daily+weekly, doctor) + 3
     # PG (memex-sync, agent-review, renderer). Gaps remain (off-host infra etc).
     assert len(monitored) >= 6
@@ -306,13 +341,196 @@ def test_registry_has_both_monitored_and_coverage_gaps():
 
 def test_render_moving_pieces_lists_all_with_coverage_flags():
     today = dt.date(2026, 6, 5)
-    doc = doctor.render_moving_pieces(today)
+    doc = doctor.render_moving_pieces(today, _jobs())
     # every registry entry appears
-    for j in doctor.JOBS:
+    for j in _jobs():
         assert j.name in doc, f"{j.name} missing from moving-pieces doc"
     assert "✅" in doc and "⚠️ no" in doc  # both monitored and gap rows rendered
     assert "DO NOT EDIT BY HAND" in doc
     assert "auto-review-doctor:moving-pieces" in doc  # close marker for idempotent rewrite
+
+
+# ─── PG registry sourcing (auto-review-6mf.1) ─────────────────────────────────
+#
+# The registry (name/host/cadence/writes/monitored + the flat liveness window)
+# now comes from ops.jobs via query_registry(), replacing the hardcoded JOBS list;
+# synthesize_jobs() reconstructs the Job list from those rows + LIVENESS_SPECS.
+
+
+def test_sql_registry_shape():
+    # Only live rows, monitored first, expected_interval emitted as decimal hours.
+    sql = doctor.SQL_REGISTRY
+    assert "FROM ops.jobs" in sql
+    assert "retired_at IS NULL" in sql
+    assert "ORDER BY monitored DESC, name" in sql
+    assert "extract(epoch from expected_interval)/3600.0" in sql
+    for col in ("name", "host", "cadence", "writes", "monitored"):
+        assert col in sql
+
+
+def test_query_registry_degrades_without_dsn():
+    # No DSN / empty DSN -> None (degrade: skip the moving-pieces projection),
+    # never raises. Mirrors query_latest_runs.
+    assert doctor.query_registry(None) is None
+    assert doctor.query_registry("") is None
+
+
+def test_rows_to_registry_parses_and_skips_malformed():
+    rows = [
+        ["auto-review-doctor", "runner", "nightly", "health", "t", "24"],
+        ["memex-sync", "runner", ":05 hourly", "memex schema", "t", "2"],
+        ["nightly-driver", "runner", "00:08 daily", "drives phases", "f", "0"],
+        ["bad-interval", "runner", "x", "y", "t", "not-a-number"],  # interval -> 0.0
+        ["too-few", "runner"],                                       # skipped: < 6 fields
+    ]
+    parsed = doctor._rows_to_registry(rows)
+    by_name = {r.name: r for r in parsed}
+    assert set(by_name) == {"auto-review-doctor", "memex-sync", "nightly-driver", "bad-interval"}
+    assert by_name["auto-review-doctor"].monitored is True
+    assert by_name["auto-review-doctor"].expected_interval_hours == 24.0
+    assert by_name["memex-sync"].expected_interval_hours == 2.0
+    assert by_name["nightly-driver"].monitored is False   # 'f' -> False
+    assert by_name["bad-interval"].expected_interval_hours == 0.0  # unparseable -> 0.0
+
+
+def test_query_registry_parses_psql_output():
+    # Integration through the psql subprocess seam: tab-separated rows parse to
+    # JobRow objects; the password is kept out of argv (same seam as the read path).
+    stdout = (
+        "auto-review-doctor\trunner\tnightly\thealth\tt\t24\n"
+        "memex-sync\trunner\t:05 hourly\tmemex schema\tt\t2\n"
+        "nightly-driver\trunner\t00:08 daily\tdrives phases\tf\t0\n"
+    )
+    fake = mock.Mock(returncode=0, stdout=stdout, stderr="")
+    with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/psql"), \
+            mock.patch.object(doctor.subprocess, "run", return_value=fake) as run:
+        rows = doctor.query_registry("postgresql://u:topsecret@h/db")
+    assert rows is not None
+    by_name = {r.name: r for r in rows}
+    assert set(by_name) == {"auto-review-doctor", "memex-sync", "nightly-driver"}
+    assert by_name["memex-sync"].monitored is True and by_name["nightly-driver"].monitored is False
+    argv = run.call_args.args[0]
+    assert not any("topsecret" in str(a) for a in argv)
+    assert run.call_args.kwargs["env"].get("PGPASSWORD") == "topsecret"
+
+
+def test_query_registry_none_on_nonzero_exit():
+    fake = mock.Mock(returncode=1, stdout="", stderr="ERROR")
+    with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/psql"), \
+            mock.patch.object(doctor.subprocess, "run", return_value=fake):
+        assert doctor.query_registry("postgresql://u@h/db") is None
+
+
+def test_synthesize_jobs_maps_marker_shape():
+    doc = next(j for j in _jobs() if j.name == "auto-review-doctor")
+    assert doc.monitored is True
+    assert doc.marker_tool == "auto-review-doctor" and doc.marker_key == "daily"
+    assert doc.hhmm == "00:22"
+    assert doc.commit_regex is not None
+    assert doc.pg_job_name == ""       # marker path, NOT a PG job
+    assert doc.pg_weekly is False
+
+
+def test_synthesize_jobs_maps_weekly_shape():
+    wk = next(j for j in _jobs() if j.name == "vault-review-weekly")
+    assert wk.pg_weekly is True
+    assert wk.pg_job_name == "vault-review-weekly"
+    assert wk.pg_weekly_dow == 0 and wk.pg_weekly_hhmm == "00:08" and wk.pg_grace_hours == 2.0
+    assert wk.commit_regex is None     # weekly path, NOT a marker job
+
+
+def test_synthesize_jobs_maps_default_pg_shape():
+    ms = next(j for j in _jobs() if j.name == "memex-sync")
+    assert ms.monitored is True
+    assert ms.pg_job_name == "memex-sync"
+    assert ms.pg_interval_hours == 2.0  # from the row's expected_interval
+    assert ms.pg_weekly is False
+    assert ms.commit_regex is None and ms.marker_tool == ""
+
+
+def test_synthesize_jobs_unmonitored_has_no_liveness_config():
+    drv = next(j for j in _jobs() if j.name == "nightly-driver")
+    assert drv.monitored is False
+    assert drv.pg_job_name == "" and drv.commit_regex is None and drv.marker_tool == ""
+    # host/cadence/writes still flow through from the row (for the dashboard).
+    assert drv.host == "runner"
+
+
+def test_synthesize_jobs_preserves_registry_content_fields():
+    ar = next(j for j in _jobs() if j.name == "agent-review")
+    assert ar.host == "runner" and ar.cadence == "nightly (~00:08)"
+    assert ar.writes == "agent_review PG schema"
+
+
+# ─── degraded mode: registry unreadable (auto-review-6mf.1 / Decision 2) ──────
+
+
+def test_doctor_self_row_is_leak_free_marker_job():
+    # The degraded-mode fallback: a single marker self-job with NO content fields,
+    # so nothing (host/schedule) is re-embedded into the script.
+    row = doctor._doctor_self_row()
+    assert row.name == doctor.DOCTOR_JOB_NAME
+    assert row.host == "" and row.cadence == "" and row.writes == ""
+    assert row.monitored is True
+    jobs = doctor.synthesize_jobs([row])
+    assert len(jobs) == 1
+    assert jobs[0].marker_tool == "auto-review-doctor"
+
+
+def test_main_degraded_registry_skips_moving_pieces_and_notes_it():
+    # End-to-end degraded run: no DSN -> query_registry returns None -> the doctor
+    # synthesizes only its own marker self-job, still renders core health, surfaces
+    # the "registry unavailable" line, and does NOT (re)write moving-pieces.md.
+    today = dt.date(2026, 6, 13)
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        log = Path(tmp) / "cron.log"
+        log.write_text("", encoding="utf-8")
+        argv = [
+            "auto-review-doctor", "--vault", str(vault),
+            "--log", str(log), "--date", today.isoformat(),
+        ]
+        env = {k: v for k, v in os.environ.items() if k != doctor.PG_DSN_ENV}
+        with mock.patch.object(doctor.sys, "argv", argv), \
+                mock.patch.dict(doctor.os.environ, env, clear=True):
+            rc = doctor.main()
+        assert rc == 0
+        checkin = doctor.checkin_path(vault / "journal" / "checkins", today)
+        text = checkin.read_text(encoding="utf-8")
+        # core health still renders (the doctor's own section + the summary line)
+        assert "auto-review doctor —" in text
+        assert "jobs healthy" in text
+        # the degraded line is surfaced …
+        assert "registry unavailable" in text
+        assert "moving-pieces not regenerated" in text
+        # … and the moving-pieces dashboard was NOT fabricated
+        mp = vault / "reference" / "auto-review" / "moving-pieces.md"
+        assert not mp.exists()
+
+
+def test_main_degraded_self_check_reads_yesterday_marker():
+    # Even degraded, the marker self-liveness path runs: the doctor's own section
+    # cell reflects yesterday's check-in (present -> the run is not blind to it).
+    today = dt.date(2026, 6, 13)
+    yday = today - dt.timedelta(days=1)
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        checkin_dir = vault / "journal" / "checkins"
+        _write_doctor_checkins(checkin_dir, [yday])
+        log = Path(tmp) / "cron.log"
+        log.write_text("", encoding="utf-8")
+        argv = [
+            "auto-review-doctor", "--vault", str(vault),
+            "--log", str(log), "--date", today.isoformat(), "--print",
+        ]
+        env = {k: v for k, v in os.environ.items() if k != doctor.PG_DSN_ENV}
+        with mock.patch.object(doctor.sys, "argv", argv), \
+                mock.patch.dict(doctor.os.environ, env, clear=True):
+            rc = doctor.main()
+        assert rc == 0
+        text = doctor.checkin_path(checkin_dir, today).read_text(encoding="utf-8")
+        # the self-liveness line saw yesterday's marker (no "ever run?" warning)
+        assert "ever run" not in text
 
 
 # ─── PG liveness path (auto-review-hg6.8) ─────────────────────────────────────
@@ -326,7 +544,7 @@ def _runrow(job_name: str, finished: dt.datetime, status: str = "ok", cost=None)
 
 
 def _pg_reports(pg_runs, today=dt.date(2026, 6, 13)):
-    return doctor.assess_jobs([], today, "", [], pg_runs=pg_runs, now_utc=NOW)
+    return doctor.assess_jobs(_jobs(), [], today, "", [], pg_runs=pg_runs, now_utc=NOW)
 
 
 def test_rows_to_runmap_parses_and_skips_malformed():
@@ -351,7 +569,7 @@ def test_query_latest_runs_degrades_without_dsn():
 
 def test_assess_pg_job_fresh_with_cost():
     runs = {"agent-review": _runrow("agent-review", NOW - dt.timedelta(minutes=10), cost=0.05)}
-    ar = next(r for r in _pg_reports(runs) if r.name == "agent-review daily")
+    ar = next(r for r in _pg_reports(runs) if r.name == "agent-review")
     assert ar.pg and ar.fired and not ar.pg_overdue
     assert ar.pg_status == "ok"
     assert ar.pg_cost == "$0.0500"
@@ -366,32 +584,32 @@ def test_assess_pg_job_renderer_day_old_row_is_fresh():
     # flagging overdue.
     finished = NOW - dt.timedelta(hours=23, minutes=40)
     runs = {"checkin-renderer-daily": _runrow("checkin-renderer-daily", finished)}
-    rr = next(r for r in _pg_reports(runs) if r.name == "check-in renderer daily")
+    rr = next(r for r in _pg_reports(runs) if r.name == "checkin-renderer-daily")
     assert rr.fired and not rr.pg_overdue
     assert rr.fired_at_pt == "(2026-06-12)"
 
 
 def test_assess_pg_job_overdue_when_stale():
     runs = {"checkin-renderer-daily": _runrow("checkin-renderer-daily", NOW - dt.timedelta(days=3))}
-    rr = next(r for r in _pg_reports(runs) if r.name == "check-in renderer daily")
+    rr = next(r for r in _pg_reports(runs) if r.name == "checkin-renderer-daily")
     assert rr.pg and not rr.fired and rr.pg_overdue
     assert rr.fired_at_pt == "(2026-06-10)"
 
 
 def test_assess_pg_job_never_ran():
-    ms = next(r for r in _pg_reports({}) if r.name == "memex-sync hourly")
+    ms = next(r for r in _pg_reports({}) if r.name == "memex-sync")
     assert ms.pg and not ms.fired and ms.fired_at_pt is None
     assert ms.pg_status is None  # no row at all
 
 
 def test_assess_pg_job_degraded_without_pg():
-    ms = next(r for r in _pg_reports(None) if r.name == "memex-sync hourly")
+    ms = next(r for r in _pg_reports(None) if r.name == "memex-sync")
     assert ms.pg and ms.pg_status == "degraded" and not ms.fired
 
 
 def test_assess_pg_job_surfaces_error_status():
     runs = {"memex-sync": _runrow("memex-sync", NOW - dt.timedelta(minutes=20), status="error")}
-    ms = next(r for r in _pg_reports(runs) if r.name == "memex-sync hourly")
+    ms = next(r for r in _pg_reports(runs) if r.name == "memex-sync")
     assert ms.fired  # ran 20 min ago, within the 2h hourly window
     assert ms.pg_status == "error"
 
@@ -435,12 +653,12 @@ WEEKLY = "vault-review-weekly"
 
 
 def _weekly_report(pg_runs, today, now_utc):
-    reports = doctor.assess_jobs([], today, "", [], pg_runs=pg_runs, now_utc=now_utc)
-    return next(r for r in reports if r.name == "vault-review weekly")
+    reports = doctor.assess_jobs(_jobs(), [], today, "", [], pg_runs=pg_runs, now_utc=now_utc)
+    return next(r for r in reports if r.name == "vault-review-weekly")
 
 
 def test_most_recent_weekly_fire_picks_this_week_after_fire():
-    job = next(j for j in doctor.JOBS if j.pg_job_name == WEEKLY)
+    job = next(j for j in _jobs() if j.pg_job_name == WEEKLY)
     # Monday 2026-06-15 00:22 PT = 07:22 UTC — just after the 00:08 fire.
     now = dt.datetime(2026, 6, 15, 7, 22, tzinfo=dt.timezone.utc)
     fire = doctor.most_recent_weekly_fire(job, now)
@@ -449,7 +667,7 @@ def test_most_recent_weekly_fire_picks_this_week_after_fire():
 
 
 def test_most_recent_weekly_fire_picks_last_week_before_fire():
-    job = next(j for j in doctor.JOBS if j.pg_job_name == WEEKLY)
+    job = next(j for j in _jobs() if j.pg_job_name == WEEKLY)
     # Monday 2026-06-15 00:05 PT = 07:05 UTC — BEFORE the 00:08 fire.
     now = dt.datetime(2026, 6, 15, 7, 5, tzinfo=dt.timezone.utc)
     fire = doctor.most_recent_weekly_fire(job, now)
