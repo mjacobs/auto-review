@@ -1,47 +1,30 @@
--- 0007_agent_review_job.sql — register agent-review in ops.jobs so it can write
--- ops.job_runs, and flip the three PG-writer jobs to monitored (auto-review-hg6.8).
+-- 0007_agent_review_job.sql — (registry rows moved to db/seed/jobs.seed.sql)
 --
--- Step-A (hg6.4/hg6.6) left agent-review and the renderer emitting no git commit
--- line and no check-in marker — the only signals the doctor's old liveness check
--- read — so the two most load-bearing daily jobs went UNMONITORED. hg6.8 moves
--- doctor liveness onto ops.job_runs. The renderer and memex-sync already write
--- job_runs rows; agent-review did not, and the job_runs.job_name -> ops.jobs.name
--- FK blocks any insert until a registry row exists. This migration adds that row
--- (the agent_review role already holds INSERT on ops.job_runs from 0005), then
--- marks all three PG writers monitored so ops.jobs is an honest parallel record
--- of what the doctor watches (and what the renderer's future health view —
--- ops.jobs ⨝ latest job_runs — will read).
+-- ORIGINALLY this migration INSERTed the agent-review ops.jobs registry row and
+-- flipped the PG-writer jobs to monitored=true, so agent-review could satisfy the
+-- ops.job_runs.job_name -> ops.jobs.name FK and the doctor's liveness moved onto
+-- ops.job_runs (auto-review-hg6.8). Those rows named an internal deploy host, so
+-- per auto-review-6mf.2 and the infra/content-separation epic the ops.jobs
+-- REGISTRY is no longer populated from committed SQL:
+--   * mechanism (this migration + the ops.jobs table in 0001) stays in the repo;
+--   * content (the rows: host, cadence, monitored flags, expected_interval) is
+--     seeded at APPLY TIME from the gitignored db/seed/jobs.seed.sql — sanitized
+--     shape in db/seed/jobs.seed.example.sql — mirroring the projects seed.
+-- See docs/superpowers/specs/2026-06-30-jobs-registry-pg.md (and its parent
+-- 2026-06-27-infra-content-separation-design.md).
 --
--- expected_interval is the max age of the latest run before "overdue". The doctor
--- runs 00:31 PT and monitors a DAY-OLD signal: it fires BEFORE the renderer
--- (00:51) and only ~10 min after agent-review (00:21, an LLM job that may still
--- be in flight), so a daily job's freshest row is normally ~24h old at doctor
--- time. 26h (24h + 2h grace) flags a job dead for a full day without false-
--- flagging an in-flight or slightly-late nightly run — the renderer's existing
--- calibration, reused. memex-sync (hourly) keeps its 2h window.
+-- APPLY ORDER (design note, decision 3): migrate.sh (this file is a recorded
+-- no-op) -> apply db/seed/jobs.seed.sql -> first job run. A job that writes
+-- ops.job_runs before its seed row exists hits the FK, but that write is
+-- best-effort and degrades to a no-op (db/README.md), so the ordering is a
+-- correctness SHOULD, not a crash.
 --
--- Idempotent: INSERT ... ON CONFLICT DO UPDATE; UPDATEs are naturally re-runnable.
--- The CHECK (NOT monitored OR expected_interval IS NOT NULL) on ops.jobs is why
--- expected_interval is set in the same statement that flips monitored.
-
-INSERT INTO ops.jobs (name, host, cadence, writes, monitored, expected_interval)
-VALUES (
-    'agent-review',
-    'auto-review-lxc',
-    '00:21 PT daily',
-    'agent_review.daily_reports (daily report row; --no-vault) + ops.job_runs',
-    true,
-    interval '26 hours'
-)
-ON CONFLICT (name) DO UPDATE SET
-    host              = EXCLUDED.host,
-    cadence           = EXCLUDED.cadence,
-    writes            = EXCLUDED.writes,
-    monitored         = EXCLUDED.monitored,
-    expected_interval = EXCLUDED.expected_interval,
-    retired_at        = NULL;
-
--- The other two PG writers already have rows (seeded at their Phase deploys) with
--- expected_interval set but monitored=false; hg6.8 turns monitoring on.
-UPDATE ops.jobs SET monitored = true
-    WHERE name IN ('memex-sync', 'checkin-renderer-daily');
+-- MIGRATION-HISTORY CAVEAT: rows a PRIOR migrate.sh run already committed to a
+-- live DB stay put — removing the INSERT/UPDATE here does not un-apply them, and
+-- migrate.sh skips already-recorded versions so it will not re-run this file.
+-- This change only stops committing NEW content rows; the live registry is
+-- reconciled by (idempotently) applying jobs.seed.sql.
+--
+-- Kept as a recorded (no-op) migration so the runner's filename ordering and
+-- ops.schema_migrations history stay unbroken (db/verify.sh asserts each file is
+-- recorded). The ops.jobs TABLE definition lives in 0001 and is unchanged.

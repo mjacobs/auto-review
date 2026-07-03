@@ -1,67 +1,31 @@
--- 0008_vault_review_jobs.sql — register vault-review (daily + weekly) in
--- ops.jobs so it can write ops.job_runs, completing the doctor's exit from the
--- cron.log-commit + check-in-marker liveness path (auto-review-2vv).
+-- 0008_vault_review_jobs.sql — (registry rows moved to db/seed/jobs.seed.sql)
 --
--- vault-review was the LAST monitored job still checked via the log/marker path,
--- which is blind to log rotation (demonstrated 2026-06-13: a mid-afternoon doctor
--- run showed vault-review ❌ never because its 00:01 commit had rotated out of
--- the current cron.log, while the 3 PG jobs correctly showed ✓ — job_runs is
--- rotation-independent). hg6.8 moved memex-sync/agent-review/renderer onto
--- job_runs; this finishes the migration for vault-review.
+-- ORIGINALLY this migration INSERTed the vault-review daily and weekly ops.jobs
+-- registry rows, finishing the doctor's exit from the cron.log-commit + marker
+-- liveness path onto ops.job_runs (auto-review-2vv / hg6.8). Those rows named an
+-- internal deploy host and the exact fire schedule, so per auto-review-6mf.2 and
+-- the infra/content-separation epic the ops.jobs REGISTRY is no longer populated
+-- from committed SQL: the rows are seeded at APPLY TIME from the gitignored
+-- db/seed/jobs.seed.sql (sanitized shape in db/seed/jobs.seed.example.sql),
+-- mirroring the projects registry seed. See
+-- docs/superpowers/specs/2026-06-30-jobs-registry-pg.md.
 --
--- The vault_review_job role already holds INSERT on ops.job_runs (0005). The
--- job_runs.job_name -> ops.jobs.name FK blocks any insert until a registry row
--- exists, so THIS MIGRATION MUST BE APPLIED BEFORE the tool's first run records
--- a row (the cron wrapper / tool will otherwise error on the FK).
+-- NOTE (weekly liveness): the weekly job's expected_interval in the seed is only
+-- a registry/FK sanity bound; a flat age window can't monitor a weekly cron (a
+-- real miss stays green for ~a week; a tight window false-positives before each
+-- fire). The SCHEDULE-AWARE weekly check lives in the doctor's code, not in the
+-- row — see the design note, decision 1 (liveness mechanics live in code).
 --
--- expected_interval is the max age of the latest run before "overdue":
---   * vault-review-daily fires 00:01 PT; the doctor runs 00:22 PT (LAST in the
---     nightly cluster), so the daily's freshest row is normally ~21 min old at
---     doctor time. The 26h window (24h + 2h grace) is the siblings' calibration,
---     reused — it flags a job dead for a full day without false-flagging a
---     slow/late nightly run (docs/schedules.md).
---   * vault-review-weekly fires Mon 00:08 PT. A flat age window would either stay
---     green for ~8 days after a real miss (8d interval) or false-positive every
---     Monday before the 00:08 fire (24h-ish interval — the hg6.12 BUG2 shape).
---     The doctor instead uses a SCHEDULE-AWARE check (most-recent expected Monday
---     fire vs the latest weekly row); 8 days + grace here is just the registry/
---     moving-pieces sanity bound and the FK target — not the live liveness math.
+-- APPLY ORDER (design note, decision 3): migrate.sh (this file is a recorded
+-- no-op) -> apply db/seed/jobs.seed.sql -> first job run. A run-row written
+-- before its seed row exists hits the FK, but that write is best-effort and
+-- degrades to a no-op (db/README.md), so the ordering is a correctness SHOULD.
 --
--- Idempotent: INSERT ... ON CONFLICT (name) DO UPDATE (mirrors 0007), so re-runs
--- and any later cadence tweak are safe. The CHECK (NOT monitored OR
--- expected_interval IS NOT NULL) on ops.jobs is why expected_interval is set in
--- the same statement that flips monitored=true.
-
-INSERT INTO ops.jobs (name, host, cadence, writes, monitored, expected_interval)
-VALUES (
-    'vault-review-daily',
-    'auto-review-lxc',
-    '00:01 PT daily',
-    'vault check-in § (daily recap, git-diff) + ops.job_runs',
-    true,
-    interval '26 hours'
-)
-ON CONFLICT (name) DO UPDATE SET
-    host              = EXCLUDED.host,
-    cadence           = EXCLUDED.cadence,
-    writes            = EXCLUDED.writes,
-    monitored         = EXCLUDED.monitored,
-    expected_interval = EXCLUDED.expected_interval,
-    retired_at        = NULL;
-
-INSERT INTO ops.jobs (name, host, cadence, writes, monitored, expected_interval)
-VALUES (
-    'vault-review-weekly',
-    'auto-review-lxc',
-    'Mon 00:08 PT weekly',
-    'vault weekly § (weekly recap, git-diff) + ops.job_runs',
-    true,
-    interval '8 days 2 hours'
-)
-ON CONFLICT (name) DO UPDATE SET
-    host              = EXCLUDED.host,
-    cadence           = EXCLUDED.cadence,
-    writes            = EXCLUDED.writes,
-    monitored         = EXCLUDED.monitored,
-    expected_interval = EXCLUDED.expected_interval,
-    retired_at        = NULL;
+-- MIGRATION-HISTORY CAVEAT: rows a PRIOR migrate.sh run already committed to a
+-- live DB stay put — removing the INSERTs here does not un-apply them, and
+-- migrate.sh skips already-recorded versions so it will not re-run this file.
+-- This change only stops committing NEW content rows; the live registry is
+-- reconciled by (idempotently) applying jobs.seed.sql.
+--
+-- Kept as a recorded (no-op) migration so the runner's filename ordering and
+-- ops.schema_migrations history stay unbroken. The ops.jobs TABLE lives in 0001.
