@@ -503,6 +503,11 @@ def test_main_degraded_registry_skips_moving_pieces_and_notes_it():
         # the degraded line is surfaced …
         assert "registry unavailable" in text
         assert "moving-pieces not regenerated" in text
+        # … the PG jobs are NOT dropped — they show as unknown so the summary
+        # can't claim all-healthy and mask an outage (roborev job 1346) …
+        assert "agent-review" in text
+        assert "unknown" in text
+        assert "1/1 jobs healthy" not in text
         # … and the moving-pieces dashboard was NOT fabricated
         mp = vault / "reference" / "auto-review" / "moving-pieces.md"
         assert not mp.exists()

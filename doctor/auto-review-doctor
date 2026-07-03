@@ -287,6 +287,25 @@ def _doctor_self_row() -> JobRow:
         monitored=True, expected_interval_hours=0.0,
     )
 
+
+def _degraded_registry_rows() -> list[JobRow]:
+    """Skeleton rows for ALL REQUIRED_MONITORED jobs, content fields EMPTY
+    (leak-free), used when the real ops.jobs read failed or was incomplete
+    (Decision 2). Synthesizing these keeps the PG jobs VISIBLE: assessed with
+    pg_runs=None they render as "⚠️ unknown (no PG)" and do NOT count as healthy,
+    so the degraded section can't report a misleading "1/1 healthy" and mask a
+    real outage (roborev job 1346). The doctor's own row still drives the marker
+    self-check via LIVENESS_SPECS. Names only — no host/schedule strings re-enter
+    the repo."""
+    rows = [_doctor_self_row()]
+    rows += [
+        JobRow(name=n, host="", cadence="", writes="", monitored=True,
+               expected_interval_hours=0.0)
+        for n in sorted(REQUIRED_MONITORED) if n != DOCTOR_JOB_NAME
+    ]
+    return rows
+
+
 DOCTOR_MARKER_OPEN  = re.compile(r"^## auto-review doctor — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
 DOCTOR_MARKER_CLOSE = re.compile(r"^<!-- auto-review-doctor:daily=\d{4}-\d{2}-\d{2} generated_at=\S+ -->$", re.MULTILINE)
 
@@ -1266,7 +1285,7 @@ def main() -> int:
         # under-report liveness and clobber moving-pieces.md (roborev job 1340). In
         # both cases synthesize only the doctor self-job and leave the prior
         # dashboard in place — never fabricate/half-fill it.
-        jobs = synthesize_jobs([_doctor_self_row()])
+        jobs = synthesize_jobs(_degraded_registry_rows())
         moving_pieces = None
         if registry is None:
             registry_unavailable = (
