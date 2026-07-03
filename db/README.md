@@ -114,7 +114,7 @@ doctor records **its own** `ops.job_runs` row at the end of every run (registere
 as `auto-review-doctor` in `0009`; the `auto_review_doctor` role already holds the
 `INSERT`). "Latest doctor row age" then becomes a queryable substrate, and the
 external real-time check is one line, runnable by **any** independent process with
-PG read access (the desktop, a baox cron — anything off the doctor's host):
+PG read access (the desktop, an off-host cron — anything off the doctor's host):
 
 ```sql
 SELECT now() - max(finished_at)
@@ -166,7 +166,11 @@ and `projects.projects` seeds come from the local vault/dev inventory. Both
 are seeded at apply time (hg6.8 / 8cw.1 work) from the operator's machine.
 This repo is public — no internal IPs, hostnames, or LAN details belong in
 any file here; placeholders like `<pg-host>`/`<cron-host>` are used
-throughout, matching `agent-review/deploy/README.md`.
+throughout, matching `agent-review/deploy/README.md`. This is enforced by a
+regression guard — tracked files must contain no internal IPs, hostnames, or
+home-paths, checked by `make check-public` (`scripts/check-public.sh`); see
+[`docs/superpowers/specs/2026-06-27-infra-content-separation-design.md`](../docs/superpowers/specs/2026-06-27-infra-content-separation-design.md)
+for the mechanism/content boundary this guard protects.
 
 ## Role model
 
@@ -262,7 +266,7 @@ never alters it; the only privilege it adds is `INSERT ON ops.job_runs`
    substrate" above. A separate `ops.heartbeats` table was considered and
    dropped as speculative (per hg6.8 "a heartbeat row in job_runs is the natural
    deadman substrate"). What stays open is only *deploying* an independent
-   checker (the one-line SQL on the desktop / a baox cron); that checker is
+   checker (the one-line SQL on the desktop / an independent host); that checker is
    itself unmonitored, an accepted residual.
 5. **`job_runs.status` vocabulary.** `ok/error` only. `running` went away
    with the append-only design (no row to update); a `skipped` state (e.g.

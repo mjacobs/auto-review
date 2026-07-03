@@ -68,7 +68,7 @@ migrate.
 
 **Verdict:** the renderer queries `memex.captures` directly; hg6.4's
 "write rows" step never happens; `memex-review/` is deleted wholesale (tree,
-cron line, wrapper, `~/.secrets` CF creds on .223 if unused by memex-sync —
+cron line, wrapper, `~/.secrets` CF creds on `AUTO_REVIEW_RUNNER` if unused by memex-sync —
 they are shared, so keep them). hg6.4's deliverable becomes the deletion
 itself.
 
@@ -138,7 +138,7 @@ grouping/formatting that reads `events` jsonb instead of calling
 
 ### 4. Run model
 
-- **Host:** the auto-review LXC (.223) — vault checkout, cron, `~/.secrets`,
+- **Host:** the auto-review LXC (`AUTO_REVIEW_RUNNER`) — vault checkout, cron, `~/.secrets`,
   and every other periodic job already live there (ADR 001).
 - **Schedule:** `51 0 * * *` PT — after the remaining writer chain (00:01
   vault-review … 00:31 doctor, both during transition) and crucially after
@@ -283,7 +283,7 @@ reproduce equivalent content before it may take a section over.
 
 - **Credentials:** `checkin_renderer` role exists (SELECT verified across all
   six schemas; write-nothing verified). Provision its password
-  (`set-role-passwords.sh` / `\password`), add a `~/.pgpass` line on .223,
+  (`set-role-passwords.sh` / `\password`), add a `~/.pgpass` line on `AUTO_REVIEW_RUNNER`,
   and `CHECKIN_RENDERER_PG_DSN` in `~/.secrets` (role-scoped var, memex-sync
   precedent — the host's `PG_DSN` belongs to agent_review).
 - **Migration:** apply `0006_renderer_runs.sql` (admin, gated on sign-off per
@@ -353,7 +353,7 @@ renderer/
 ## Execution plan
 
 **Phase 0 — access + registry (gated).** `0006_renderer_runs.sql`; renderer
-role password + `.pgpass`/`~/.secrets` on .223; seed `ops.jobs` renderer
+role password + `.pgpass`/`~/.secrets` on `AUTO_REVIEW_RUNNER`; seed `ops.jobs` renderer
 row(s); verify with read-only queries against live. *Gate: admin DB access +
 user sign-off per db/README.*
 
@@ -363,7 +363,7 @@ legacy-normalize); `compose`+`note` in bracket mode; `cli run --dry-run
 --print`; goldens: rendered bracket for 2026-06-10 vs the real note's memex +
 agent sections (modulo heading normalization). `runlog.py` + tests.
 
-**Phase 2 — deploy + first takeover (= step A).** Build wheel, ship to .223,
+**Phase 2 — deploy + first takeover (= step A).** Build wheel, ship to `AUTO_REVIEW_RUNNER`,
 cron `51 0 * * *`; confirm one live night (bracket coexists with vault-review
 marker + doctor section). Then the deletions: remove memex-review cron line,
 **delete `memex-review/`** (closes hg6.4 as dissolved), flip agent-review's
