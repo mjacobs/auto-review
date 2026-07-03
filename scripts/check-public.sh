@@ -30,18 +30,24 @@ allow_file="scripts/check-public.allow"
 # default (config.py hardcodes it) and is intentionally not matched here.
 # ---------------------------------------------------------------------------
 declare -a LEAK_PATTERNS=(
-  # 1. Full RFC1918 IPv4 addresses.
-  '\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b@@real RFC1918 IPv4 (10.x.x.x)'
-  '\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b@@real RFC1918 IPv4 (192.168.x.x)'
-  '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b@@real RFC1918 IPv4 (172.16-31.x.x)'
+  # 1. Full RFC1918 IPv4 addresses. Anchored with (^|[^0-9.]) rather than a
+  #    leading \b: \b matches only between a word and non-word char, so an IP
+  #    preceded by a word char (e.g. the "n" in a "…\n192.168.1.1" string
+  #    literal) is NOT at a \b and would slip through. [^0-9.] instead admits
+  #    that case while still not matching mid-address (roborev job 1307).
+  '(^|[^0-9.])10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b@@real RFC1918 IPv4 (10.x.x.x)'
+  '(^|[^0-9.])192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b@@real RFC1918 IPv4 (192.168.x.x)'
+  '(^|[^0-9.])172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b@@real RFC1918 IPv4 (172.16-31.x.x)'
   # 2. Homelab host octet-shorthands (the real last-octet shorthands the docs use).
   '\.223\b@@homelab host octet-shorthand (.223)'
   '\.199\b@@homelab host octet-shorthand (.199)'
   '\.7\.5\b@@homelab host octet-shorthand (.7.5)'
-  # 3. Real homelab hostnames.
+  # 3. Real homelab hostnames (incl. the deploy host's DNS-style name, which
+  #    the 0007-0009 seed-row INSERTs still carry until auto-review-6mf.2 lands).
   '\bbaox\b@@real homelab hostname (baox)'
   '\bopenclaw\b@@real homelab hostname (openclaw)'
   '\bportainer\b@@real homelab hostname (portainer)'
+  '\bauto-review-lxc\b@@real deploy hostname (auto-review-lxc)'
   # 4. The operator's real home path (synthetic /home/user, /home/<user>,
   #    /home/<home>, /home/linuxbrew are shared placeholders and must NOT
   #    match this — the \b after "mj" already excludes /home/mjacobs etc.).
