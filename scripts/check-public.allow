@@ -11,13 +11,6 @@
 # to PG (auto-review-6mf.1).
 doctor/auto-review-doctor
 
-# Seed-row INSERTs carry a host string ('auto-review-lxc') pending removal
-# once ops.jobs is seeded at apply time instead of via migration
-# (auto-review-6mf.2).
-db/migrations/0007_agent_review_job.sql
-db/migrations/0008_vault_review_jobs.sql
-db/migrations/0009_auto_review_doctor_job.sql
-
 # Synthetic /home/mj TEST FIXTURES — explicitly out of scope per the design
 # doc's "Out of scope" section (a realistic-looking but non-deployed path
 # used to exercise path-parsing logic, not a leak).
