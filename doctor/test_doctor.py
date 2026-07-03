@@ -607,7 +607,10 @@ def test_main_degraded_forces_unknown_even_if_job_runs_readable():
             "auto-review-doctor", "--vault", str(vault),
             "--log", str(log), "--date", today.isoformat(),
         ]
-        env = {**os.environ, doctor.PG_DSN_ENV: "postgresql://u@h/db"}
+        # No DSN in the env: query_registry/query_latest_runs are mocked (they
+        # ignore the dsn), and an unset DSN makes record_doctor_run a clean no-op,
+        # so main() never shells a real psql to a fake host (roborev job 1367).
+        env = {k: v for k, v in os.environ.items() if k != doctor.PG_DSN_ENV}
         with mock.patch.object(doctor, "query_registry", return_value=partial), \
                 mock.patch.object(doctor, "query_latest_runs", return_value=runmap), \
                 mock.patch.object(doctor.sys, "argv", argv), \
