@@ -212,6 +212,28 @@ LIVENESS_SPECS: dict[str, LivenessSpec] = {
 }
 
 
+# The monitored jobs the doctor MUST see in ops.jobs for a read to be trusted. A
+# successful-but-incomplete result (seed not applied, a row deleted) is NOT
+# authoritative: trusting it would silently under-report liveness AND overwrite
+# moving-pieces.md with a half-empty dashboard (roborev job 1340). Missing any of
+# these → take the degraded path. Names only (leak-free): the two LIVENESS_SPECS
+# specials plus the four default-PG writers.
+REQUIRED_MONITORED: frozenset[str] = frozenset({
+    "auto-review-doctor", "vault-review-weekly",
+    "agent-review", "checkin-renderer-daily", "memex-sync", "vault-review-daily",
+})
+
+
+def registry_is_complete(rows: list[JobRow]) -> bool:
+    """True iff every REQUIRED_MONITORED job is present as a monitored row.
+
+    Guards the doctor against a successful-but-partial ops.jobs read (empty result,
+    seed not applied, a row deleted). Such a result must not be treated as
+    authoritative — the caller takes the degraded path instead (roborev job 1340)."""
+    present = {r.name for r in rows if r.monitored}
+    return REQUIRED_MONITORED <= present
+
+
 def synthesize_jobs(rows: list[JobRow]) -> list[Job]:
     """Reconstruct the Job registry from ops.jobs rows + the LIVENESS_SPECS map.
 
@@ -1233,17 +1255,31 @@ def main() -> int:
     # last one stands — never fabricate the registry from a compiled-in copy), and
     # surface a health line saying so.
     registry = query_registry(dsn)
-    if registry is not None:
+    if registry is not None and registry_is_complete(registry):
         jobs = synthesize_jobs(registry)
         moving_pieces: str | None = render_moving_pieces(today_pt, jobs)
         registry_unavailable = None
     else:
+        # Degrade on EITHER a failed read (None) OR a successful-but-incomplete one
+        # (empty / missing required monitored rows — seed not applied, a row
+        # deleted). An incomplete registry is NOT authoritative: trusting it would
+        # under-report liveness and clobber moving-pieces.md (roborev job 1340). In
+        # both cases synthesize only the doctor self-job and leave the prior
+        # dashboard in place — never fabricate/half-fill it.
         jobs = synthesize_jobs([_doctor_self_row()])
         moving_pieces = None
-        registry_unavailable = (
-            f"_⚠️ registry unavailable (no {PG_DSN_ENV} or psql, or PG down) — "
-            f"moving-pieces not regenerated (the last dashboard stands)._"
-        )
+        if registry is None:
+            registry_unavailable = (
+                f"_⚠️ registry unavailable (no {PG_DSN_ENV} or psql, or PG down) — "
+                f"moving-pieces not regenerated (the last dashboard stands)._"
+            )
+        else:
+            missing = ", ".join(sorted(REQUIRED_MONITORED - {r.name for r in registry if r.monitored}))
+            registry_unavailable = (
+                f"_⚠️ registry INCOMPLETE — ops.jobs is missing required monitored "
+                f"job(s): {missing} (seed not applied?). Treating as degraded; "
+                f"moving-pieces not regenerated (the last dashboard stands)._"
+            )
     reports = assess_jobs(jobs, log_lines, today_pt, yesterday_text, tracebacks, pg_runs=pg_runs)
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)

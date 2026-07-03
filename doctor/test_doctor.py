@@ -533,6 +533,51 @@ def test_main_degraded_self_check_reads_yesterday_marker():
         assert "ever run" not in text
 
 
+def test_registry_is_complete_requires_all_monitored():
+    assert doctor.registry_is_complete(FIXTURE_ROWS)            # full set → complete
+    assert not doctor.registry_is_complete([])                  # empty → incomplete
+    # dropping a required monitored row → incomplete
+    assert not doctor.registry_is_complete(
+        [r for r in FIXTURE_ROWS if r.name != "agent-review"]
+    )
+    # a required name present but only as an UNMONITORED row doesn't satisfy it
+    downgraded = [
+        doctor.JobRow(r.name, r.host, r.cadence, r.writes, False, 0.0)
+        if r.name == "agent-review" else r
+        for r in FIXTURE_ROWS
+    ]
+    assert not doctor.registry_is_complete(downgraded)
+
+
+def test_main_incomplete_registry_degrades_not_authoritative():
+    # A SUCCESSFUL but INCOMPLETE ops.jobs read (e.g. seed not applied, a row
+    # deleted) must NOT be treated as authoritative (roborev job 1340): the doctor
+    # takes the degraded path, names the missing job(s), and does NOT overwrite
+    # moving-pieces.md with a half-empty dashboard.
+    today = dt.date(2026, 6, 13)
+    partial = [doctor.JobRow("memex-sync", "runner", ":05 hourly",
+                             "memex PG schema", True, 2.0)]  # missing 5 required
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp) / "vault"
+        log = Path(tmp) / "cron.log"
+        log.write_text("", encoding="utf-8")
+        argv = [
+            "auto-review-doctor", "--vault", str(vault),
+            "--log", str(log), "--date", today.isoformat(),
+        ]
+        env = {k: v for k, v in os.environ.items() if k != doctor.PG_DSN_ENV}
+        with mock.patch.object(doctor, "query_registry", return_value=partial), \
+                mock.patch.object(doctor.sys, "argv", argv), \
+                mock.patch.dict(doctor.os.environ, env, clear=True):
+            rc = doctor.main()
+        assert rc == 0
+        text = doctor.checkin_path(vault / "journal" / "checkins", today).read_text(encoding="utf-8")
+        assert "registry INCOMPLETE" in text
+        assert "auto-review-doctor" in text      # a missing required job is named
+        mp = vault / "reference" / "auto-review" / "moving-pieces.md"
+        assert not mp.exists()                    # dashboard NOT fabricated/half-filled
+
+
 # ─── PG liveness path (auto-review-hg6.8) ─────────────────────────────────────
 
 # 2026-06-13 08:31 UTC ≈ 00:31 PT — when the doctor cron fires.
