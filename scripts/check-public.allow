@@ -7,9 +7,8 @@
 # next to any new entry. See:
 #   docs/superpowers/specs/2026-06-27-infra-content-separation-design.md
 
-# Canonical JOBS list — hosts/IPs enumerated per job until the registry moves
-# to PG (auto-review-6mf.1).
-doctor/auto-review-doctor
+# (The doctor's JOBS list moved to ops.jobs (PG) in auto-review-6mf.1, so the
+# script no longer enumerates hosts/IPs and needs no allowlist entry.)
 
 # Synthetic /home/mj TEST FIXTURES — explicitly out of scope per the design
 # doc's "Out of scope" section (a realistic-looking but non-deployed path

@@ -57,6 +57,21 @@ SQL_LATEST_RUNS = (
     "FROM ops.job_runs ORDER BY job_name, finished_at DESC"
 )
 
+# ── PG job registry (auto-review-6mf.1) ──
+# The moving-pieces registry (name/host/cadence/writes/monitored + the flat
+# liveness window) is now sourced from ops.jobs, NOT a hardcoded JOBS list: those
+# rows name internal hosts/schedules — content that must stay out of this PUBLIC
+# repo (design: docs/superpowers/specs/2026-06-30-jobs-registry-pg.md). Only
+# live (non-retired) rows; monitored first so the dashboard leads with watched
+# jobs. expected_interval is emitted as decimal HOURS (0 when NULL) so the flat
+# PG-liveness window rides along without a second round-trip. Read via the same
+# `psql -At` subprocess seam as SQL_LATEST_RUNS (keeps the doctor dependency-free).
+SQL_REGISTRY = (
+    "SELECT name, host, cadence, writes, monitored, "
+    "coalesce(extract(epoch from expected_interval)/3600.0, 0) "
+    "FROM ops.jobs WHERE retired_at IS NULL ORDER BY monitored DESC, name"
+)
+
 # ── PG self-row write: the external dead-man substrate (auto-review-02w) ──
 # g52's in-band self-liveness can't fire while the doctor is FULLY down (nothing
 # runs to report — the watcher-flaw). So the doctor ALSO records its own
@@ -90,14 +105,18 @@ SELF_LIVENESS_WINDOW = 7
 
 @dataclass(frozen=True)
 class Job:
-    """One entry in the periodic-process registry — the single source of truth
-    for the moving pieces of the auto-review stack.
+    """One entry in the periodic-process registry — a moving piece of the
+    auto-review stack.
 
-    Monitored entries also carry the fields the doctor uses to check liveness;
+    Jobs are SYNTHESIZED from ops.jobs rows (the registry's source of truth,
+    auto-review-6mf.1) via synthesize_jobs(): the registry fields (name/host/
+    cadence/writes/monitored) come from PG; the leak-free liveness mechanics
+    (marker regex / weekly params) are grafted on from LIVENESS_SPECS.
+    Monitored entries carry the fields the doctor uses to check liveness;
     UNMONITORED infra is catalogued (monitored=False) so the registry lists
     EVERYTHING and the 'monitored?' column in the generated moving-pieces doc
     surfaces coverage gaps. ANY change to the periodic-job stack MUST update
-    this list (see AGENTS.md → "Periodic-process registry").
+    ops.jobs (see AGENTS.md → "Periodic-process registry").
     """
     name: str
     host: str
@@ -129,81 +148,122 @@ class Job:
     pg_grace_hours: float = 2.0     # slack after the expected fire before "overdue"
 
 
-# The canonical registry. Monitored crons first, then catalogued-but-unmonitored
-# moving pieces (the coverage gaps). Keep this in sync with reality — the doctor
-# both checks liveness AND regenerates reference/auto-review/moving-pieces.md
-# from it, so a stale row here is a stale dashboard there.
-JOBS = [
-    # memex-review DISSOLVED 2026-06-13 (hg6.4): the renderer emits the memex
-    # section from memex.captures; the tool, its 00:11 cron, and its marker are
-    # gone. agent-review went --no-vault the same day (hg6.6): it writes only a
-    # PG row, so it has no commit line or marker to monitor here — it and the
-    # renderer are PG-monitored (job_runs liveness, below). vault-review moved to
-    # PG liveness 2026-06-17 (auto-review-2vv) — see the PG block below; the only
-    # remaining marker job is the doctor's own self-row.
-    Job("auto-review-doctor daily", "auto-review LXC (.223)", "via run-checkin-nightly (last phase)", "check-in § (health) + ops.job_runs (own dead-man row)", True,
-        hhmm="00:22", commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
-        marker_tool="auto-review-doctor", marker_key="daily"),
-    # ── PG-monitored: liveness = a fresh ops.job_runs row, not log+marker ──────
-    # The PG-row writers (ADR 002). Each appends an ops.job_runs row per run, so
-    # the doctor checks "latest row younger than pg_interval_hours?" (hg6.8).
-    # Since OMG-002 these run as ordered phases of run-checkin-nightly with the
-    # doctor LAST, so it always reads TODAY's just-written rows — the ordering is
-    # structural now, not a timing guess against fixed offsets. The 26h window is
-    # kept anyway: it tolerates a slow/in-flight nightly run (e.g. a phase that
-    # timed out and the driver moved on) — falling back to yesterday's ~24h-old
-    # row — while still flagging a job dead a full day. memex-sync is hourly (2h
-    # window). A crashed run writes no row and goes overdue; an 'error' row
-    # surfaces a handled failure. See docs/schedules.md.
-    Job("memex-sync hourly", "auto-review LXC (.223)", ":05 hourly", "memex PG schema (captures/triage-seed/watermark)", True,
-        pg_job_name="memex-sync", pg_interval_hours=2),
-    Job("agent-review daily", "auto-review LXC (.223)", "via run-checkin-nightly (~00:08 PT)", "agent_review PG schema (daily report row; --no-vault)", True,
-        pg_job_name="agent-review", pg_interval_hours=26),
-    Job("check-in renderer daily", "auto-review LXC (.223)", "via run-checkin-nightly (after agent-review)", "check-in note bracket (memex + agent-review §§, projection of PG)", True,
-        pg_job_name="checkin-renderer-daily", pg_interval_hours=26),
-    Job("vault-review daily", "auto-review LXC (.223)", "via run-checkin-nightly (first phase)", "check-in § (daily recap, git-diff) + ops.job_runs", True,
-        pg_job_name="vault-review-daily", pg_interval_hours=26),
-    # SCHEDULE-AWARE weekly (auto-review-2vv): not a flat age window. The weekly
-    # fires Mon 00:08 PT and the doctor runs 00:22 PT, so on Monday the freshest
-    # row is ~14 min old. The check is overdue ONLY once the most-recent expected
-    # Monday fire (+grace) has passed without a fresh row — green the rest of the
-    # week off one real run, and NOT a false-positive in the pre-fire Monday
-    # window (the hg6.12 BUG2 the old marker+reported_week_label path produced).
-    Job("vault-review weekly", "auto-review LXC (.223)", "via run-checkin-nightly Mondays (~00:08 PT)", "weekly § (weekly recap, git-diff) + ops.job_runs", True,
-        pg_job_name="vault-review-weekly", pg_weekly=True, pg_weekly_dow=0, pg_weekly_hhmm="00:08", pg_grace_hours=2.0),
-    # ── catalogued but NOT liveness-monitored by the doctor (coverage gaps) ──
-    # The single ordered nightly driver (OMG-002 / auto-review-bhp). Runs the
-    # five daily phases above IN ORDER, each timeout-bounded, with the doctor
-    # LAST. monitored=False: it writes no ops.job_runs row of its own — if it
-    # dies, its phases write no rows and go overdue under their own liveness
-    # above, so it needs no separate check. Catalogued so the moving-pieces doc
-    # lists it. The 10:00 catch-up below remains a failure-only backstop.
-    Job("run-checkin-nightly (OMG-002)", "auto-review LXC (.223)", "00:08 PT daily (single ordered driver)", "drives vault-daily→[weekly]→agent-review→memex-sync→renderer→doctor, timeout-bounded", False),
-    # agent-review's upstream data feed: pushes session data into agentsview PG,
-    # which agent-review reads at 00:08. The baox push is timing-critical (the
-    # 23:55 push + the */30 boundary at 00:00 must land the prior day's sessions
-    # in the ~8 min before agent-review reads; the margin was trimmed from 21 min
-    # when the chain was tightened, so watch this gap); claw feeds are low-activity.
-    # The renderer/producer-race catch-up (auto-review-hg6.11, OPTION 3). Fires
-    # ~10:00 PT and is GAP-GATED: it re-runs agent-review + the renderer for
-    # yesterday ONLY when ops.job_runs has no successful agent-review run
-    # covering that date (the transient-producer-failure → placeholder case;
-    # a quiet zero-session day still records an ok run, so it is NOT a gap).
-    # monitored=False is
-    # deliberate: a conditional job that legitimately no-ops on every healthy
-    # day has no fresh row/marker to check, so a liveness window would
-    # false-positive every quiet day. It's still catalogued here so the registry
-    # / moving-pieces doc reflects the whole stack (AGENTS.md). Do NOT give it a
-    # pg_job_name liveness path. See renderer/deploy/run-checkin-catchup.sh.
-    Job("check-in catch-up (hg6.11)", "auto-review LXC (.223)", "~10:00 PT daily (gap-gated; no-ops when no row missing)", "re-runs agent-review + renderer for yesterday on a producer gap; replaces the placeholder", False),
-    Job("agentsview pg push (baox)", "baox (workstation)", "*/30 + 23:55 PT", "agentsview PG (agent-review's session source)", False),
-    Job("agentsview pg push (claw ×2)", "claw (.7.5; mj+openclaw)", "periodic", "agentsview PG (hermes + openclaw sessions; low-activity)", False),
-    Job("vault auto-sync", "baox (workstation)", "continuous (background)", "vault git commits/pushes", False),
-    Job("memex-triage", "baox (workstation)", "*/5 systemd --user timer", "inbox/memex.md (exactly-once capture delivery)", False),
-    Job("vault-agent capture", "openclaw", "harness-driven", "vault snapshots", False),
-    Job("LiteLLM gateway", "portainer (.199)", "always-on (docker)", "LLM proxy endpoint", False),
-    Job("logrotate", "auto-review LXC (.223)", "23:00 PT daily", "rotates cron.log", False),
-]
+@dataclass(frozen=True)
+class JobRow:
+    """One ops.jobs registry row (auto-review-6mf.1).
+
+    The registry is sourced from PG (ops.jobs) — the host/cadence strings are
+    CONTENT (they name internal hosts/schedules) and must stay out of this public
+    repo. `expected_interval_hours` is the flat liveness window
+    (ops.jobs.expected_interval), decimal hours; 0.0 when NULL. This carries only
+    leak-free registry data; the executable liveness MECHANICS (regexes, weekly
+    schedule params) live in LIVENESS_SPECS, keyed by `name`.
+    """
+    name: str
+    host: str
+    cadence: str
+    writes: str
+    monitored: bool
+    expected_interval_hours: float
+
+
+@dataclass(frozen=True)
+class LivenessSpec:
+    """The in-code liveness MECHANICS for a job, keyed by ops.jobs.name.
+
+    Registry data (name/host/cadence/writes/monitored/expected_interval) is
+    content and lives in PG; the mechanics — the marker-path regex+markers and
+    the schedule-aware weekly params — are executable code that leak nothing, so
+    they stay in the repo (design: 2026-06-30-jobs-registry-pg.md, Decision 1).
+    A monitored job ABSENT from LIVENESS_SPECS uses the DEFAULT PG liveness:
+    "latest ops.job_runs row younger than expected_interval?". Only the two
+    special shapes need an entry — the marker-path self-check and the weekly job.
+    """
+    # ── marker path (legacy: cron.log commit line + check-in marker) ──
+    marker: bool = False
+    hhmm: str = ""
+    commit_regex: re.Pattern[str] | None = None
+    marker_tool: str = ""
+    marker_key: str = ""
+    # ── PG-weekly path (schedule-aware, not a flat age window) ──
+    pg_weekly: bool = False
+    pg_weekly_dow: int = 0          # Monday (matches dt.date.weekday())
+    pg_weekly_hhmm: str = "00:08"   # expected fire time PT
+    pg_grace_hours: float = 2.0     # slack after the expected fire before "overdue"
+
+
+# The two jobs whose liveness is NOT the default flat-window PG check. Everything
+# else that is monitored=True in ops.jobs falls through to the default PG path.
+LIVENESS_SPECS: dict[str, LivenessSpec] = {
+    # The doctor's own self-row: the last remaining MARKER-path job (the others
+    # moved to ops.job_runs liveness). "fired" reflects this very run; the section
+    # cell is a real check of yesterday's check-in for our own marker.
+    "auto-review-doctor": LivenessSpec(
+        marker=True, hhmm="00:22",
+        commit_regex=re.compile(r"\[main [0-9a-f]+\] auto-review doctor: daily health (\S+Z)"),
+        marker_tool="auto-review-doctor", marker_key="daily",
+    ),
+    # SCHEDULE-AWARE weekly (auto-review-2vv): not a flat age window — overdue ONLY
+    # once the most-recent expected Monday fire (+grace) has passed without a fresh
+    # row (green the rest of the week off one real run; no pre-fire-Monday BUG2).
+    "vault-review-weekly": LivenessSpec(
+        pg_weekly=True, pg_weekly_dow=0, pg_weekly_hhmm="00:08", pg_grace_hours=2.0,
+    ),
+}
+
+
+def synthesize_jobs(rows: list[JobRow]) -> list[Job]:
+    """Reconstruct the Job registry from ops.jobs rows + the LIVENESS_SPECS map.
+
+    Each row supplies the registry fields (name/host/cadence/writes/monitored);
+    the in-code mechanics map supplies the leak-free execution config keyed by
+    name. Four shapes (design Decision 1):
+      * marker spec  → marker-path job (the doctor self-row);
+      * weekly spec  → schedule-aware PG-weekly job;
+      * monitored, no spec → default PG liveness (flat expected_interval window);
+      * unmonitored  → catalogued only (registry fields, no liveness config).
+    This yields exactly the old hand-written JOBS list, but with hosts/schedules
+    now coming from PG instead of the repo.
+    """
+    jobs: list[Job] = []
+    for row in rows:
+        spec = LIVENESS_SPECS.get(row.name)
+        common = dict(
+            name=row.name, host=row.host, cadence=row.cadence,
+            writes=row.writes, monitored=row.monitored,
+        )
+        if spec and spec.marker:
+            jobs.append(Job(
+                **common, hhmm=spec.hhmm, commit_regex=spec.commit_regex,
+                marker_tool=spec.marker_tool, marker_key=spec.marker_key,
+            ))
+        elif spec and spec.pg_weekly:
+            jobs.append(Job(
+                **common, pg_job_name=row.name,
+                pg_interval_hours=row.expected_interval_hours,
+                pg_weekly=True, pg_weekly_dow=spec.pg_weekly_dow,
+                pg_weekly_hhmm=spec.pg_weekly_hhmm, pg_grace_hours=spec.pg_grace_hours,
+            ))
+        elif row.monitored:
+            jobs.append(Job(
+                **common, pg_job_name=row.name,
+                pg_interval_hours=row.expected_interval_hours,
+            ))
+        else:
+            jobs.append(Job(**common))
+    return jobs
+
+
+def _doctor_self_row() -> JobRow:
+    """The degraded-mode fallback registry row for the doctor's OWN marker
+    self-check, built with NO content fields (host/cadence/writes empty) so it
+    re-introduces no host/schedule strings. When the PG registry is unreadable
+    (Decision 2) this keeps the marker self-liveness path running; everything
+    else — the PG-writer liveness and the moving-pieces dashboard — degrades."""
+    return JobRow(
+        name=DOCTOR_JOB_NAME, host="", cadence="", writes="",
+        monitored=True, expected_interval_hours=0.0,
+    )
 
 DOCTOR_MARKER_OPEN  = re.compile(r"^## auto-review doctor — \d{4}-\d{2}-\d{2}.*$", re.MULTILINE)
 DOCTOR_MARKER_CLOSE = re.compile(r"^<!-- auto-review-doctor:daily=\d{4}-\d{2}-\d{2} generated_at=\S+ -->$", re.MULTILINE)
@@ -315,6 +375,52 @@ def query_latest_runs(dsn: str | None) -> dict[str, RunRow] | None:
         return None
     rows = [line.split("\t") for line in proc.stdout.splitlines() if line.strip()]
     return _rows_to_runmap(rows)
+
+
+def _rows_to_registry(rows: list[list[str]]) -> list[JobRow]:
+    """Parse psql `-At -F\\t` rows from SQL_REGISTRY into JobRow objects. `monitored`
+    arrives as psql's boolean text ('t'/'f'); the interval column is decimal hours.
+    Malformed rows are skipped rather than fatal — a parse hiccup on one row must
+    not blank the whole registry."""
+    out: list[JobRow] = []
+    for r in rows:
+        if len(r) < 6:
+            continue
+        name, host, cadence, writes, monitored, interval = r[0], r[1], r[2], r[3], r[4], r[5]
+        try:
+            hours = float(interval) if interval not in ("", None) else 0.0
+        except ValueError:
+            hours = 0.0
+        out.append(JobRow(
+            name=name, host=host, cadence=cadence, writes=writes,
+            monitored=(monitored == "t"), expected_interval_hours=hours,
+        ))
+    return out
+
+
+def query_registry(dsn: str | None) -> list[JobRow] | None:
+    """The live job registry (ops.jobs) via a `psql -At` subprocess (auto-review-6mf.1).
+
+    Returns None — signalling DEGRADED (skip the moving-pieces projection, don't
+    fabricate it; Decision 2) — when there's no DSN, psql isn't on PATH, or the
+    query fails/times out. Mirrors query_latest_runs so the doctor stays a single
+    stdlib-only file and never crashes on a PG-less box.
+    """
+    if not dsn or not shutil.which("psql"):
+        return None
+    conn_arg, pg_env = _psql_conn(dsn)
+    try:
+        proc = subprocess.run(
+            ["psql", conn_arg, "-At", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", SQL_REGISTRY],
+            capture_output=True, text=True, timeout=PSQL_TIMEOUT_S,
+            env={**os.environ, "PGCONNECT_TIMEOUT": "8", **pg_env},
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    rows = [line.split("\t") for line in proc.stdout.splitlines() if line.strip()]
+    return _rows_to_registry(rows)
 
 
 def _psql_conn(dsn: str) -> tuple[str, dict[str, str]]:
@@ -763,6 +869,7 @@ def count_push_rejections(lines: list[str]) -> int:
 
 
 def assess_jobs(
+    jobs: list[Job],
     log_lines: list[str],
     today_pt: dt.date,
     yesterday_checkin_text: str,
@@ -772,7 +879,7 @@ def assess_jobs(
 ) -> list[JobReport]:
     now_utc = now_utc or dt.datetime.now(UTC)
     reports: list[JobReport] = []
-    for job in JOBS:
+    for job in jobs:
         if not job.monitored:
             continue  # catalogued infra; liveness not checked (see moving-pieces doc)
         if job.pg_job_name:
@@ -876,7 +983,7 @@ def _pg_result_cell(r: JobReport) -> str:
     return cell
 
 
-def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int, self_liveness: tuple[dt.date | None, list[dt.date]], agent_artifact_warning: str | None = None) -> str:
+def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list[dict[str, str]], push_rejections: int, self_liveness: tuple[dt.date | None, list[dt.date]], agent_artifact_warning: str | None = None, registry_unavailable: str | None = None) -> str:
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     expected = [r for r in reports if r.skipped_reason is None]
     fired = [r for r in expected if r.fired]
@@ -947,6 +1054,11 @@ def render_section(today_pt: dt.date, reports: list[JobReport], tracebacks: list
     ]
     if degraded_line:
         parts += ["", degraded_line]
+    if registry_unavailable:
+        # DEGRADED registry (auto-review-6mf.1 / Decision 2): the ops.jobs read
+        # failed, so the moving-pieces dashboard was NOT regenerated this run (the
+        # last one stands). Surfaced here so the skipped projection is visible.
+        parts += ["", registry_unavailable]
     if agent_artifact_warning:
         # The artifact mismatch (auto-review-byp): producer status was 'ok' but the
         # rendered note still holds the placeholder — surfaced near the top so it's
@@ -1049,12 +1161,13 @@ def doctor_self_liveness(
     return max(present), gaps
 
 
-def render_moving_pieces(today_pt: dt.date, registry: list[Job] = JOBS) -> str:
+def render_moving_pieces(today_pt: dt.date, registry: list[Job]) -> str:
     """Render the periodic-process registry as a standalone markdown dashboard.
 
-    Generated from the same JOBS registry the doctor uses for liveness, so the
-    dashboard cannot drift from what's actually monitored. The 'monitored?'
-    column makes coverage gaps (unmonitored moving pieces) visible at a glance.
+    Generated from the SAME synthesized registry the doctor uses for liveness
+    (now sourced from ops.jobs, auto-review-6mf.1), so the dashboard cannot drift
+    from what's actually monitored. The 'monitored?' column makes coverage gaps
+    (unmonitored moving pieces) visible at a glance.
     """
     now_utc = dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     monitored = [j for j in registry if j.monitored]
@@ -1062,8 +1175,8 @@ def render_moving_pieces(today_pt: dt.date, registry: list[Job] = JOBS) -> str:
         "# Moving pieces — auto-review periodic-process registry",
         "",
         f"_Generated by auto-review doctor on {today_pt.isoformat()} — DO NOT EDIT BY HAND._",
-        "_Source of truth: the `JOBS` registry in `doctor/auto-review-doctor`; "
-        "any stack change must update it (see AGENTS.md)._",
+        "_Source of truth: the `ops.jobs` registry (PG); any stack change must "
+        "update it via the jobs seed (see AGENTS.md)._",
         f"_{len(monitored)}/{len(registry)} pieces are liveness-monitored by the doctor; "
         "⚠️ rows are coverage gaps._",
         "",
@@ -1110,16 +1223,35 @@ def main() -> int:
     yesterday_text = yesterday_path.read_text(encoding="utf-8") if yesterday_path.exists() else ""
 
     tracebacks = find_tracebacks(log_lines)
-    pg_runs = query_latest_runs(os.environ.get(PG_DSN_ENV))
-    reports = assess_jobs(log_lines, today_pt, yesterday_text, tracebacks, pg_runs=pg_runs)
+    dsn = os.environ.get(PG_DSN_ENV)
+    pg_runs = query_latest_runs(dsn)
+    # The registry now comes from ops.jobs (auto-review-6mf.1), not a hardcoded
+    # JOBS list. When it's readable we synthesize the full Job list and regenerate
+    # the moving-pieces dashboard from it. When it's NOT (no DSN / no psql / PG
+    # down — Decision 2) we DEGRADE: synthesize only the doctor's own marker
+    # self-job so the self-check still runs, do NOT regenerate moving-pieces (the
+    # last one stands — never fabricate the registry from a compiled-in copy), and
+    # surface a health line saying so.
+    registry = query_registry(dsn)
+    if registry is not None:
+        jobs = synthesize_jobs(registry)
+        moving_pieces: str | None = render_moving_pieces(today_pt, jobs)
+        registry_unavailable = None
+    else:
+        jobs = synthesize_jobs([_doctor_self_row()])
+        moving_pieces = None
+        registry_unavailable = (
+            f"_⚠️ registry unavailable (no {PG_DSN_ENV} or psql, or PG down) — "
+            f"moving-pieces not regenerated (the last dashboard stands)._"
+        )
+    reports = assess_jobs(jobs, log_lines, today_pt, yesterday_text, tracebacks, pg_runs=pg_runs)
     push_rejections = count_push_rejections(log_lines)
     self_liveness = doctor_self_liveness(checkin_dir, today_pt)
     # Artifact assertion (auto-review-byp): is the rendered agent-review section in
     # yesterday's note the placeholder despite the producer persisting a report?
     # Quiet-day-safe — see assess_agent_artifact.
     agent_artifact_warning = assess_agent_artifact(yesterday_text, yesterday_pt, pg_runs)
-    section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness, agent_artifact_warning)
-    moving_pieces = render_moving_pieces(today_pt)
+    section = render_section(today_pt, reports, tracebacks, push_rejections, self_liveness, agent_artifact_warning, registry_unavailable)
 
     # Compact summary for the doctor's own ops.job_runs row (auto-review-02w),
     # mirroring render_section's jobs-healthy math (len(fired)/len(expected)) so
@@ -1137,8 +1269,9 @@ def main() -> int:
         # must NOT leave a dead-man row), mirroring how the check-in/registry
         # writes below are skipped here.
         sys.stdout.write(section)
-        sys.stdout.write("\n----- reference/auto-review/moving-pieces.md -----\n")
-        sys.stdout.write(moving_pieces)
+        if moving_pieces is not None:
+            sys.stdout.write("\n----- reference/auto-review/moving-pieces.md -----\n")
+            sys.stdout.write(moving_pieces)
         return 0
 
     today_text = ensure_checkin(today_path, today_pt)
@@ -1148,14 +1281,20 @@ def main() -> int:
 
     # Regenerate the moving-pieces registry dashboard (whole-file rewrite — the
     # registry is the source of truth, so this is an overwrite, not a merge).
-    mp_path = args.vault / "reference" / "auto-review" / "moving-pieces.md"
-    mp_path.parent.mkdir(parents=True, exist_ok=True)
-    mp_path.write_text(moving_pieces, encoding="utf-8")
+    # DEGRADED (moving_pieces is None): the ops.jobs read failed, so we leave the
+    # prior dashboard in place rather than fabricate one (Decision 2).
+    if moving_pieces is not None:
+        mp_path = args.vault / "reference" / "auto-review" / "moving-pieces.md"
+        mp_path.parent.mkdir(parents=True, exist_ok=True)
+        mp_path.write_text(moving_pieces, encoding="utf-8")
 
     if args.print:
         sys.stdout.write(section)
     print(f"auto-review-doctor: wrote section → {today_path}", file=sys.stderr)
-    print(f"auto-review-doctor: wrote registry → {mp_path}", file=sys.stderr)
+    if moving_pieces is not None:
+        print(f"auto-review-doctor: wrote registry → {mp_path}", file=sys.stderr)
+    else:
+        print("auto-review-doctor: registry unavailable — moving-pieces NOT regenerated", file=sys.stderr)
 
     # External dead-man substrate (auto-review-02w): record the doctor's OWN
     # ops.job_runs row LAST — after reading the other jobs' rows and rendering its
@@ -1165,7 +1304,7 @@ def main() -> int:
     # failed/absent write degrades silently (no DSN/psql, FK not yet applied, DB
     # down) and never changes the primary health output's exit status.
     if record_doctor_run(
-        os.environ.get(PG_DSN_ENV),
+        dsn,
         started_at=started_at,
         status="ok",
         summary=doctor_summary,
