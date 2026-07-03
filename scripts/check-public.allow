@@ -1,0 +1,55 @@
+# check-public.allow — known, justified exceptions to scripts/check-public.sh.
+#
+# One entry per line: `path` (suppress every hit in that file) or
+# `path:regex` (suppress only hits whose matched line matches regex).
+# Comments (#) and blank lines are ignored. Every entry is a KNOWN leak
+# pending a tracked cleanup — cite the beads issue (or design-doc rationale)
+# next to any new entry. See:
+#   docs/superpowers/specs/2026-06-27-infra-content-separation-design.md
+
+# Real topology — hosts, IPs, full cron chain, TZ. Pending move to the vault
+# (auto-review-6mf.3, Tier-2 — the vault-side half of the doc genericization).
+docs/schedules.md
+
+# Canonical JOBS list — hosts/IPs enumerated per job until the registry moves
+# to PG (auto-review-6mf.1).
+doctor/auto-review-doctor
+
+# Seed-row INSERTs carry a host string ('auto-review-lxc') pending removal
+# once ops.jobs is seeded at apply time instead of via migration
+# (auto-review-6mf.2).
+db/migrations/0007_agent_review_job.sql
+db/migrations/0008_vault_review_jobs.sql
+db/migrations/0009_auto_review_doctor_job.sql
+
+# Synthetic /home/mj TEST FIXTURES — explicitly out of scope per the design
+# doc's "Out of scope" section (a realistic-looking but non-deployed path
+# used to exercise path-parsing logic, not a leak).
+agent-review/tests/test_extract_scope.py:/home/mj\b
+doctor/test_doctor.py:/home/mj\b
+
+# --- Found while wiring up this guard; not in the original 6mf.4 punch list.
+# Flagged for review rather than silently narrowing the patterns above. ---
+
+# Synthetic private IP (192.168.1.1, the canonical router-default address)
+# used as DSN-redaction test input — same "test fixture" class as the two
+# entries above, just not called out by name in the design doc.
+agent-review/tests/test_redaction.py:192\.168\.1\.1
+
+# Established placeholder convention: the real system name is kept as a
+# human-readable label immediately beside its AUTO_REVIEW_RUNNER /
+# OPENCLAW_HOST placeholder — the accepted convention this guard reuses
+# rather than inventing a new style for. Not a raw, unredacted address.
+AGENTS.md:openclaw
+doctor/README.md:openclaw
+
+# Retired-feature doc naming a box by role only, no address attached.
+doctor/health-watch:portainer
+
+# Timing-dependency comment naming the external push source; same class of
+# leak as the doctor JOBS list above, not yet scrubbed.
+scripts/run-checkin-nightly.sh:baox
+
+# The design spec itself quoting the `.223` pattern while describing the
+# remediation plan (meta-reference to the leak shape, not an instance of it).
+docs/superpowers/specs/2026-06-27-infra-content-separation-design.md:\.223
