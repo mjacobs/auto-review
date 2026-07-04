@@ -26,13 +26,26 @@ job_name="${DEADMAN_JOB_NAME:-auto-review-doctor}"
 
 command -v psql >/dev/null || { echo "deadman-check: psql not found in PATH" >&2; exit 2; }
 
+# Refuse an embedded password: psql's connection arg lands in argv, which is
+# world-readable via /proc/<pid>/cmdline. Keep the credential in ~/.pgpass and
+# pass a password-less DSN (roborev job 1388; same class as the doctor's
+# _psql_conn). Covers URI (user:pass@) and keyword (password=) forms.
+if [[ "$DEADMAN_PG_DSN" =~ ://[^@/]*:[^@/]*@ || "$DEADMAN_PG_DSN" == *password=* ]]; then
+  echo "deadman-check: DEADMAN_PG_DSN must not embed a password (argv is world-readable via /proc). Put it in ~/.pgpass and use a password-less DSN." >&2
+  exit 2
+fi
+
 # Age of the latest heartbeat, in hours. No row yet → a large sentinel so a
 # never-recorded substrate alarms exactly like a stale one (that inert state is
-# precisely what OMG-003 was). -At = bare value; ON_ERROR_STOP so a query error
-# is a hard failure, not a silent empty read.
-age_hours="$(psql "$DEADMAN_PG_DSN" -X -At -v ON_ERROR_STOP=1 -c \
-  "SELECT COALESCE(round(EXTRACT(EPOCH FROM (now() - max(finished_at))) / 3600.0, 2), 999999)
-     FROM ops.job_runs WHERE job_name = '${job_name}';" 2>/dev/null)" || {
+# precisely what OMG-003 was). job_name rides as a psql :'var' via STDIN (-f -),
+# never string-interpolated, so a quote in it can't break or inject the query
+# (roborev job 1388). -At = bare value; ON_ERROR_STOP so a query error is a hard
+# failure, not a silent empty read.
+age_hours="$(psql "$DEADMAN_PG_DSN" -X -At -v ON_ERROR_STOP=1 -v "job_name=$job_name" -f - 2>/dev/null <<'SQL'
+SELECT COALESCE(round(EXTRACT(EPOCH FROM (now() - max(finished_at))) / 3600.0, 2), 999999)
+  FROM ops.job_runs WHERE job_name = :'job_name';
+SQL
+)" || {
   echo "deadman-check: query failed (PG unreachable or no SELECT on ops.job_runs)" >&2
   exit 2
 }
