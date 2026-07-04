@@ -28,9 +28,15 @@ command -v psql >/dev/null || { echo "deadman-check: psql not found in PATH" >&2
 
 # Refuse an embedded password: psql's connection arg lands in argv, which is
 # world-readable via /proc/<pid>/cmdline. Keep the credential in ~/.pgpass and
-# pass a password-less DSN (roborev job 1388; same class as the doctor's
-# _psql_conn). Covers URI (user:pass@) and keyword (password=) forms.
-if [[ "$DEADMAN_PG_DSN" =~ ://[^@/]*:[^@/]*@ || "$DEADMAN_PG_DSN" == *password=* ]]; then
+# pass a password-less DSN (roborev jobs 1388/1406; same class as the doctor's
+# _psql_conn). libpq accepts the password several ways, so reject them all
+# case-insensitively: URI userinfo (user:pass@), and keyword / URI-query
+# `password [=] value` with optional whitespace, anchored at start / whitespace /
+# ? / & so it can't be evaded by spacing, casing, or query-param form.
+dsn_lc="${DEADMAN_PG_DSN,,}"
+_uri_pw='://[^@/]*:[^@/]*@'
+_kw_pw='(^|[[:space:]]|[?&])password[[:space:]]*='
+if [[ "$dsn_lc" =~ $_uri_pw ]] || [[ "$dsn_lc" =~ $_kw_pw ]]; then
   echo "deadman-check: DEADMAN_PG_DSN must not embed a password (argv is world-readable via /proc). Put it in ~/.pgpass and use a password-less DSN." >&2
   exit 2
 fi
