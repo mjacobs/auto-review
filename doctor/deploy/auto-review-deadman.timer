@@ -1,0 +1,13 @@
+[Unit]
+Description=Timer for the auto-review doctor dead-man check (auto-review-02w)
+
+[Timer]
+# The doctor runs nightly (~00:22) with a 26h expected_interval. Checking a few
+# times a day surfaces a missed run within hours (not a full day), and works even
+# if the workstation is asleep overnight. Persistent=true catches up a check the
+# box slept through. Times are the box's local zone (PT).
+OnCalendar=*-*-* 08,14,20:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

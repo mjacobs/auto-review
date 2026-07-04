@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# deadman-check — off-host dead-man watch for the auto-review doctor
+# (auto-review-02w, the external half; see OMG-003).
+#
+# The doctor records its own ops.job_runs row at the end of every run, so
+# "latest auto-review-doctor row age" is a queryable heartbeat. This script is
+# the INDEPENDENT checker that closes the who-watches-the-watcher loop: run it
+# on a host OTHER than the doctor's (e.g. the workstation) so it still fires when
+# the doctor's host is fully down — the exact case the doctor's own in-band
+# self-liveness structurally cannot report.
+#
+# Alarm (stale or never-recorded) → nonzero exit (the systemd unit goes failed +
+# journals it) + a desktop notification if notify-send is available. Healthy →
+# exit 0 quietly.
+#
+# Config (env; NO hosts/IPs live in this public repo — the DSN is instance data):
+#   DEADMAN_PG_DSN        required. libpq conninfo with SELECT on ops.job_runs.
+#                         A password-less URI + ~/.pgpass keeps creds out of env.
+#   DEADMAN_MAX_AGE_HOURS optional, default 30 (doctor expected_interval 26h + slack).
+#   DEADMAN_JOB_NAME      optional, default auto-review-doctor.
+set -euo pipefail
+
+: "${DEADMAN_PG_DSN:?set DEADMAN_PG_DSN (libpq conninfo with SELECT on ops.job_runs)}"
+max_age_hours="${DEADMAN_MAX_AGE_HOURS:-30}"
+job_name="${DEADMAN_JOB_NAME:-auto-review-doctor}"
+
+command -v psql >/dev/null || { echo "deadman-check: psql not found in PATH" >&2; exit 2; }
+
+# Age of the latest heartbeat, in hours. No row yet → a large sentinel so a
+# never-recorded substrate alarms exactly like a stale one (that inert state is
+# precisely what OMG-003 was). -At = bare value; ON_ERROR_STOP so a query error
+# is a hard failure, not a silent empty read.
+age_hours="$(psql "$DEADMAN_PG_DSN" -X -At -v ON_ERROR_STOP=1 -c \
+  "SELECT COALESCE(round(EXTRACT(EPOCH FROM (now() - max(finished_at))) / 3600.0, 2), 999999)
+     FROM ops.job_runs WHERE job_name = '${job_name}';" 2>/dev/null)" || {
+  echo "deadman-check: query failed (PG unreachable or no SELECT on ops.job_runs)" >&2
+  exit 2
+}
+
+# Numeric compare via awk (bash can't do floats).
+if awk -v a="$age_hours" -v m="$max_age_hours" 'BEGIN { exit !(a+0 > m+0) }'; then
+  msg="auto-review doctor DEAD-MAN alarm: last '${job_name}' heartbeat is ${age_hours}h old (> ${max_age_hours}h). The doctor may be down."
+  echo "deadman-check: $msg" >&2
+  command -v notify-send >/dev/null && notify-send -u critical "auto-review doctor down?" "$msg" 2>/dev/null || true
+  exit 1
+fi
+
+echo "deadman-check: ok — '${job_name}' heartbeat ${age_hours}h old (<= ${max_age_hours}h)"

@@ -1,0 +1,13 @@
+[Unit]
+Description=auto-review doctor dead-man check (off-host heartbeat watch, auto-review-02w)
+Documentation=https://github.com/mjacobs/auto-review
+
+[Service]
+Type=oneshot
+# Instance config (DEADMAN_PG_DSN, threshold) lives on the operator's box, NOT in
+# this public repo. See doctor/deploy/README.md.
+EnvironmentFile=%h/.config/auto-review/deadman.env
+ExecStart=%h/.local/bin/deadman-check
+# A dead-man alarm is a nonzero exit: the unit goes `failed` (visible in
+# `systemctl --user --failed` and the journal) and deadman-check also fires a
+# desktop notification. Do NOT Restart= — a persistent failed state IS the alarm.
