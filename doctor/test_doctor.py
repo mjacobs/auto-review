@@ -1089,8 +1089,10 @@ def test_record_doctor_run_attempts_insert_with_job_name_status_summary():
     run.assert_called_once()
     argv = run.call_args.args[0]
     assert argv[0] == "psql"
-    # The statement is an INSERT into ops.job_runs (not a read).
-    sql = argv[-1]
+    # The SQL rides on STDIN (-f -), not -c: psql only interpolates :'var' in its
+    # stdin/file lexer, never in a -c string (OMG-003 — the dead-man write bug).
+    assert "-f" in argv and argv[argv.index("-f") + 1] == "-"
+    sql = run.call_args.kwargs["input"]
     assert "INSERT INTO ops.job_runs" in sql
     # Values ride as -v variables; job_name/status/summary are present and correct.
     vars_passed = _flag_value(argv, "-v")

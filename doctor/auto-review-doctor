@@ -554,8 +554,14 @@ def record_doctor_run(
                 "-v", f"started_at={started_iso}",
                 "-v", f"status={status}",
                 "-v", f"summary={json.dumps(summary, separators=(',', ':'))}",
-                "-c", SQL_INSERT_DOCTOR_RUN,
+                # SQL on STDIN (-f -), NOT -c: psql interpolates :'var' only in its
+                # file/stdin lexer. A -c string must be server-parsable with no
+                # psql-specific features, so `:'job_name'` in -c is a raw syntax
+                # error — the (FK-masked) reason this dead-man row never wrote until
+                # OMG-003. Confirmed against psql 17.
+                "-f", "-",
             ],
+            input=SQL_INSERT_DOCTOR_RUN,
             capture_output=True, text=True, timeout=PSQL_TIMEOUT_S,
             env={**os.environ, "PGCONNECT_TIMEOUT": "8", **pg_env},
         )
