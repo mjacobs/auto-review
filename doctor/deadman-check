@@ -35,7 +35,10 @@ command -v psql >/dev/null || { echo "deadman-check: psql not found in PATH" >&2
 # ? / & so it can't be evaded by spacing, casing, or query-param form.
 dsn_lc="${DEADMAN_PG_DSN,,}"
 _uri_pw='://[^@/]*:[^@/]*@'
-_kw_pw='(^|[[:space:]]|[?&])password[[:space:]]*='
+# Both libpq secret keys — `password` and `sslpassword` (the client SSL key
+# passphrase) — via `(ssl)?`, anchored so `mypassword`-style substrings don't
+# false-match but `sslpassword` does (roborev job 1415).
+_kw_pw='(^|[[:space:]]|[?&])(ssl)?password[[:space:]]*='
 if [[ "$dsn_lc" =~ $_uri_pw ]] || [[ "$dsn_lc" =~ $_kw_pw ]]; then
   echo "deadman-check: DEADMAN_PG_DSN must not embed a password (argv is world-readable via /proc). Put it in ~/.pgpass and use a password-less DSN." >&2
   exit 2
