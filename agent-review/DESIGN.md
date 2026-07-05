@@ -295,7 +295,7 @@ agent-review reset 2026-05-14         # delete cached digests + report for re-ru
 ```
 
 Exit codes: `0` success, `2` no in-scope sessions for date, `3` upstream DB
-unavailable, `4` Anthropic API failure, `5` vault write failure.
+unavailable, `4` Anthropic API failure.
 
 ## Tech stack
 
@@ -324,22 +324,27 @@ agent-review/
 │   ├── db.py                     # psycopg + queries
 │   ├── extract.py                # stage 1
 │   ├── digest.py                 # stage 2 (per-session, cached)
-│   ├── synth.py                  # stage 3 (daily narrative)
-│   ├── vault.py                  # stage 4 (note read/write/replace)
+│   ├── synth.py                  # stage 3 (daily narrative + section render + UPSERT)
 │   ├── artifacts.py              # deterministic commit/file/PR extraction
-│   ├── pricing.py                # cost math from agentsview.model_pricing
-│   ├── prompts/
-│   │   ├── digest_system.md
-│   │   └── synth_system.md
-│   └── templates/
-│       └── daily_section.md.j2
+│   ├── redaction.py              # secret scrubbing before LLM calls
+│   ├── llm.py                    # backend dispatch (claude_cli / api)
+│   ├── runlog.py                 # ops.job_runs recording (hg6.8)
+│   └── prompts/
+│       ├── digest_system.md
+│       └── synth_system.md
 └── tests/
     ├── fixtures/                  # captured session bundles
-    ├── test_extract.py
     ├── test_artifacts.py
-    ├── test_vault.py
-    └── test_digest_smoke.py       # @pytest.mark.live, opt-in
+    ├── test_db.py
+    ├── test_digest.py
+    ├── test_extract_scope.py
+    ├── test_llm.py
+    ├── test_redaction.py
+    └── test_runlog.py
 ```
+
+(No `vault.py` / `templates/`: agent-review is DB-only — the check-in renderer
+owns note projection, hg6.6.)
 
 ## Cost & token budget
 
@@ -367,9 +372,9 @@ synthesis.
 ## Idempotency & re-runs
 
 - **Stage 2** is keyed on `(session_id, data_version)`; safe to re-run cheaply.
-- **Stage 3** is keyed on `report_date`; UPSERT replaces.
-- **Stage 4** finds the section by HTML-comment marker and replaces in place;
-  preserves any human edits to the rest of the file.
+- **Stage 3** is keyed on `report_date`; UPSERT replaces the row (rendered
+  section markdown included). agent-review writes no files — the check-in
+  renderer owns idempotent placement of the section in the note (hg6.6).
 - `agent-review reset DATE` is the explicit "blow away cache and re-run".
 
 ## Phased rollout
@@ -379,8 +384,8 @@ synthesis.
 | 0     | Scaffold + migrations + config + DB connection                                |
 | 1     | Stage 1 extract + artifact extraction (no LLM yet); `agent-review extract DATE --print` |
 | 2     | Stage 2 digest with cache; `agent-review digest <session-id>`                 |
-| 3     | Stage 3 synthesis; `agent-review today --no-vault --print`                    |
-| 4     | Stage 4 vault writer + `today`/`yesterday`/range CLI                          |
+| 3     | Stage 3 synthesis; `agent-review today --dry-run --print`                     |
+| 4     | Stage 4 vault writer + `today`/`yesterday`/range CLI (the vault writer was later removed — hg6.6 made agent-review DB-only, projection moved to the renderer) |
 | 5     | Backfill last 30 days; tune prompts against real output                       |
 | 6     | (later) Weekly synthesis from daily digests; systemd timer; viewer            |
 
