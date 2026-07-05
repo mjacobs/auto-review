@@ -75,14 +75,11 @@ digest, not summarized independently.
              ▼
 ┌──────────────────────────┐
 │ Stage 3: Daily synthesis │ ─► UPSERT agent_review.daily_reports
-│  (Claude → markdown)     │
-└────────────┬─────────────┘
-             │
-             ▼
-┌──────────────────────────┐
-│ Stage 4: Vault writer    │ ─► append/replace section in
-│                          │     ~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md
-└──────────────────────────┘
+│  (Claude → markdown)     │     (the rendered section markdown is stored
+└──────────────────────────┘      on the row; agent-review writes no files)
+
+  The check-in renderer (separate tool) reads that row and projects it into
+  ~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md — hg6.6 / ADR 002.
 ```
 
 Two stages because heavy days don't fit in one call: 2026-05-04 was 77
@@ -155,14 +152,17 @@ USER:
 
 Model: **Claude Sonnet 4.6** for synthesis (better narrative judgment).
 
-### Stage 4 — vault writer
+### Stage 4 — the rendered section
 
-Target: `~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md`. If the file doesn't exist,
-create it from `~/vault/templates/daily.md` (with frontmatter
-`tags: [journal/checkin]`, `date:` filled in).
+Stage 3 renders the section markdown and stores it on the
+`agent_review.daily_reports` row. agent-review writes **no files**: the
+check-in renderer reads that row and projects the section into
+`~/vault/journal/checkins/YYYY/MM/YYYY-MM-DD.md`.
 
-Append (or **replace**, on re-run) a single section, mirroring the existing
-vault-agent `## delta — …` convention:
+(Historically agent-review had its own "Stage 4 — vault writer" that appended
+the section directly, mirroring the vault-agent `## delta — …` convention;
+`hg6.6` / ADR 002 moved that projection to the single renderer.) The stored
+section has this shape:
 
 ```markdown
 ## agent-review — 2026-05-14 06:00
@@ -192,8 +192,9 @@ _window: 2026-05-14 00:00 → 23:59 local · 24 sessions · 4 projects · ~$0.08
 <!-- agent-review:report_date=2026-05-14 generated_at=2026-05-14T06:00:12-07:00 -->
 ```
 
-Re-runs detect the trailing HTML comment marker and replace the section
-in-place — no duplicate sections, no diff churn in the vault git repo.
+Re-running a date upserts the `daily_reports` row (idempotent by
+`report_date`); the renderer owns placing/replacing the section in the note —
+no duplicate sections, no diff churn in the vault git repo.
 
 Session links use the `agentsview://session/<id>` URI scheme (not yet
 resolvable; reserved for the future viewer). Until then they render as inert
@@ -290,7 +291,6 @@ agent-review reset 2026-05-14         # delete cached digests + report for re-ru
   --model-digest haiku-4.5
   --model-synth sonnet-4.6
   --tz America/Los_Angeles  # default from $TZ
-  --vault ~/vault           # default
   --since-version N    # force re-digest of sessions whose data_version > N
 ```
 
@@ -303,8 +303,6 @@ unavailable, `4` Anthropic API failure, `5` vault write failure.
 - `anthropic` (official SDK) — prompt caching enabled.
 - `psycopg[binary]` v3 — connection pooled at the process level.
 - `click` — CLI.
-- `jinja2` — section template.
-- `python-frontmatter` — round-trip vault note frontmatter cleanly.
 - `pydantic` — typed config + digest schema validation.
 - `tenacity` — retry on Anthropic 429/5xx.
 - `pytest` + `pytest-recording` (VCR-style) for stable LLM-call tests.
@@ -316,7 +314,7 @@ agent-review/
 ├── pyproject.toml
 ├── DESIGN.md
 ├── README.md
-├── .env.example                  # PG_DSN, LLM_API_KEY, VAULT_PATH, TZ
+├── .env.example                  # PG_DSN, LLM_API_KEY, TZ
 ├── migrations/
 │   └── 001_init.sql              # creates agent_review.* tables
 ├── src/agent_review/
