@@ -124,7 +124,7 @@ deployment recipe.
 | :------------ | :-------------------- | :------------------ |
 | `vault-review` | Stable, in production | 2026-04             |
 | `memex-review` | **Dissolved 2026-06-13** (ADR 002 / `auto-review-hg6.4`) — replaced by `memex-sync` → PG → renderer | 2026-05 – 2026-06   |
-| `agent-review` | Stable, in production (`--no-vault` → `agent_review` PG schema; renderer emits the section) | 2026-06             |
+| `agent-review` | Stable, in production (DB-only → `agent_review` PG schema; renderer emits the section) | 2026-06             |
 
 ## Related projects
 

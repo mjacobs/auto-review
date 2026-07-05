@@ -1,6 +1,6 @@
 """ops.job_runs run-recording for agent-review (auto-review-hg6.8).
 
-agent-review's daily `--no-vault` run persists ``agent_review.daily_reports``
+agent-review's daily (DB-only) run persists ``agent_review.daily_reports``
 but, before hg6.8, wrote no ``ops.job_runs`` row — so the doctor (which moved
 from cron.log+marker liveness to querying ``ops.job_runs``) could not see it.
 

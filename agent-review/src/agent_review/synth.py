@@ -29,8 +29,8 @@ def synthesize_day(
     window_end: dt.datetime | None = None,
 ) -> DailyReport:
     """Synthesize a daily report. Returns a DailyReport with the rendered
-    section markdown ready for the vault writer. Caller is responsible for
-    deciding whether to write to vault and/or persist to DB."""
+    section markdown, which persist_report stores; the check-in renderer reads
+    that row and emits the note section (agent-review writes no files — hg6.6)."""
     # Pull cumulative digest token usage from persisted rows so cost reflects
     # the full report, not just this run's incremental spend. Dry-run callers
     # pass explicit usage so fresh non-persisted digests are counted instead.

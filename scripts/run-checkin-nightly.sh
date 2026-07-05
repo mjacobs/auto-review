@@ -91,8 +91,8 @@ if [[ "$(date +%u)" == "1" ]]; then
 fi
 
 # 3. agent-review — the slow/variable producer (sequential claude -p digests;
-#    runtime scales with session count). --no-vault: writes its PG row only, no
-#    git. The generous timeout bounds a WEDGED claude -p (e.g. a network hang) so
+#    runtime scales with session count). DB-only: writes its PG row only, no
+#    files, no git. The generous timeout bounds a WEDGED claude -p (e.g. a network hang) so
 #    it can't stall the whole chain; a legit long run is rare. On timeout the
 #    renderer below still runs (placeholder) and the doctor + 10:00 catch-up
 #    recover — degrades to the old behaviour, never worse.

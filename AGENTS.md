@@ -13,7 +13,7 @@ a separate, human-drained inbox note.
 
 | Tool | Source | Output |
 |---|---|---|
-| `agent-review` | `agentsview` Postgres | LLM-synthesized daily report → `agent_review` PG schema (`--no-vault`); the renderer emits the check-in section |
+| `agent-review` | `agentsview` Postgres | LLM-synthesized daily report → `agent_review` PG schema (DB-only, writes no files); the renderer emits the check-in section |
 | `vault-review` | vault git history | deterministic delta recap (check-in section) |
 | `memex-triage` | `serverless-memex` `/thoughts?since=<seq>` feed | exactly-once delivery into `inbox/memex.md` (rolling, action-framed) |
 | `memex-triage-cli` | `memex` PG schema (`captures` + `capture_triage`) | terminal-native triage: `list` the inbox + `file`/`discard`/`reset` flip PG-owned triage state (`auto-review-hg6.9`) |
@@ -32,8 +32,8 @@ a separate, human-drained inbox note.
 > **`memex-review` was dissolved 2026-06-13** (ADR 002 / beads `auto-review-hg6.4`).
 > It is no longer a tool: `memex-sync` mirrors captures `serverless-memex` (D1)
 > → the `memex` PG schema hourly, and the check-in renderer emits the memex
-> inbox section from those rows. Likewise `agent-review` now runs `--no-vault`
-> (writes only its PG row); the **renderer is the single writer** of the
+> inbox section from those rows. Likewise `agent-review` is DB-only
+> (writes only its PG row, no files); the **renderer is the single writer** of the
 > machine-owned sections (ADR 002). See `renderer/DESIGN.md`.
 
 `vault-review` still uses the marker-bracketed idempotency story (its PG
@@ -124,8 +124,8 @@ the vault git lock. Wrappers can share a single log file (e.g.
   file up, and keeps the per-run audit trail (commit message names the tool +
   date) in vault history. Existing production wrappers already do this.
   **Under ADR 002 the PG-row writers lose their git path**: `agent-review`
-  runs `--no-vault` and `memex-sync` touches no files; the renderer is the
-  single writer that commits the machine-owned check-in sections.
+  is DB-only (writes no files) and `memex-sync` touches no files; the renderer
+  is the single writer that commits the machine-owned check-in sections.
   `memex-triage`'s wrapper additionally commits *only* its own
   `inbox/memex.md` and uses `--autostash`, since it runs `*/5` on a desktop
   you're actively editing in.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Daily agent-review cron wrapper.
 #
-# Runs agent-review against yesterday's agent sessions in --no-vault mode:
-# the daily report is persisted to the agent_review PG schema ONLY — no
-# markdown, no marker, no git. The check-in renderer (run-checkin-renderer-
+# Runs agent-review against yesterday's agent sessions (DB-only): the daily
+# report is persisted to the agent_review PG schema ONLY — no markdown, no
+# marker, no git (hg6.6). The check-in renderer (run-checkin-renderer-
 # daily, 00:51) reads that row and emits the agent-review section as part of
 # its bracket. This is the ADR 002 split: machine data lives in Postgres,
 # the renderer is the single writer of the projection (beads auto-review-hg6.6).
@@ -60,8 +60,9 @@ if [[ "$_digest_backend" == "api" || "$_synth_backend" == "api" ]]; then
   : "${LLM_API_KEY:?LLM_API_KEY must be set when a stage uses the api backend}"
 fi
 
-# --no-vault: write the report row to PG, touch no files. There is therefore
-# no git path here — the renderer owns the vault commit/push (AGENTS.md: only
-# the renderer's wrapper commits). A crashed run persists no row and goes
-# overdue under the doctor's job_runs liveness check (auto-review-hg6.8).
-agent-review run yesterday --no-vault
+# agent-review is DB-only: it writes the report row to PG and touches no files
+# (hg6.6 — DB is the store, the note is a projection). There is therefore no git
+# path here — the renderer owns the vault commit/push (AGENTS.md: only the
+# renderer's wrapper commits). A crashed run persists no row and goes overdue
+# under the doctor's job_runs liveness check (auto-review-hg6.8).
+agent-review run yesterday

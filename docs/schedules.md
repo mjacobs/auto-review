@@ -34,7 +34,7 @@ would be done (the race that broke the 06-18 note; `auto-review-bhp`, OMG-002).
 |---|---|---|---|:--:|
 | 1. vault-review daily | `run-recap-daily` | `D 00:00:00 → D 23:59:59` | note `D` § | ✔ |
 | 2. vault-review weekly (Mondays) | `run-recap-weekly` | week `W` (Mon–Sun) | weekly note | ✔ |
-| 3. agent-review (producer) | `run-agent-review-daily` | `D 00:00 → D+1 00:00` | `agent_review.daily_reports[D]` (PG) | ✗ (`--no-vault`) |
+| 3. agent-review (producer) | `run-agent-review-daily` | `D 00:00 → D+1 00:00` | `agent_review.daily_reports[D]` (PG) | ✗ (DB-only) |
 | 4. memex-sync | `run-memex-sync` | — (capture mirror; freshen) | captures (PG) | ✗ |
 | 5. check-in renderer | `run-checkin-renderer-daily` | composes note `D` from PG | note `D` bracket + `ops.job_runs` | ✔ |
 | 6. doctor (LAST) | `run-auto-review-doctor` | liveness snapshot | note `D+1` (own §); assesses `D` | ✔ |
@@ -76,7 +76,7 @@ The `10:00` slot is the producer→consumer-race **catch-up** (`auto-review-hg6.
 OPTION 3), the back half of buffer #2 below. It sits ~10 h after the `00:08`
 producer run so a transient LLM-gateway/DB blip has had time to clear. It is
 **gap-gated**: it probes Postgres read-only for `agent_review.daily_reports[D]`
-and re-runs `agent-review run D --no-vault` + `checkin-renderer run D` (both
+and re-runs `agent-review run D` + `checkin-renderer run D` (both
 idempotent — the re-run cleanly REPLACES the placeholder) **only when that row
 is missing**. On a healthy night the row is present, so it logs `no backfill
 needed for D` and exits 0 — a clean no-op. Because it legitimately no-ops on most

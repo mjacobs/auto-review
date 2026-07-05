@@ -64,11 +64,11 @@ Non-writing DB/config smoke test:
 ssh -o BatchMode=yes <cron-host> 'source ~/.secrets && agent-review extract yesterday --print >/tmp/agent-review-extract.json'
 ```
 
-The wrapper runs `agent-review run yesterday --no-vault` (ADR 002 /
-`auto-review-hg6.6`): it persists the daily report to the `agent_review` PG
-schema and touches **no files** — there is no vault write and no git path here
-(the check-in renderer emits the section from PG). Idempotent reruns upsert the
-same row:
+The wrapper runs `agent-review run yesterday` (ADR 002 / `auto-review-hg6.6`):
+agent-review is DB-only, so it persists the daily report to the `agent_review`
+PG schema and touches **no files** — there is no vault write and no git path
+here (the check-in renderer emits the section from PG). Idempotent reruns upsert
+the same row:
 
 ```bash
 ssh -o BatchMode=yes <cron-host> 'run-agent-review-daily'

@@ -283,9 +283,10 @@ agent-review show 2026-05-14          # print latest stored report to stdout
 agent-review reset 2026-05-14         # delete cached digests + report for re-run
 
 # global flags
-  --dry-run            # don't write to vault, don't write to DB
-  --no-vault           # write to DB only
+  --dry-run            # don't persist (no DB write, no job_runs row)
   --print              # also print result to stdout
+  # (agent-review is DB-only since hg6.6; it writes no files. --no-vault is a
+  #  deprecated no-op kept only so existing wrappers don't break.)
   --model-digest haiku-4.5
   --model-synth sonnet-4.6
   --tz America/Los_Angeles  # default from $TZ

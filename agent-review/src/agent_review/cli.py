@@ -16,7 +16,6 @@ from .digest import get_or_create_digest, get_or_create_digest_result
 from .extract import extract_day, extract_session
 from .runlog import record_best_effort, record_job_run
 from .synth import persist_report, synthesize_day
-from .vault import read_section, remove_section, write_section
 
 
 @dataclass
@@ -121,22 +120,24 @@ def digest(session_id: str, force: bool, do_print: bool) -> None:
 
 @main.command()
 @click.argument("date_str", default="today")
-@click.option("--dry-run", is_flag=True, help="Don't write to vault, don't persist report.")
-@click.option("--no-vault", is_flag=True, help="Persist report to DB but don't write to vault.")
+@click.option("--dry-run", is_flag=True, help="Don't persist the report (no DB write, no job_runs row).")
+@click.option("--no-vault", is_flag=True, hidden=True,
+              help="Deprecated no-op: agent-review is always DB-only now "
+                   "(ADR 002 / hg6.6). Kept so existing wrappers don't break.")
 @click.option("--print", "do_print", is_flag=True, help="Print rendered section to stdout.")
 @click.option("--force", is_flag=True, help="Force re-digest of all sessions for the date.")
 def run(date_str: str, dry_run: bool, no_vault: bool, do_print: bool, force: bool) -> None:
     """Generate a daily report for DATE (default: today). DATE may be 'today',
     'yesterday', a date like '2026-05-14', or a range like
-    '2026-05-10..2026-05-14' / 'last-week'."""
+    '2026-05-10..2026-05-14' / 'last-week'. The report persists to
+    agent_review.daily_reports; the check-in renderer reads that row and emits
+    the note section (agent-review writes no files — hg6.6)."""
     dates = _parse_range(date_str)
     started_at = dt.datetime.now(dt.UTC)
     outcomes: list[RunOutcome] = []
     try:
         for date in dates:
-            outcome = _run_one(
-                date, dry_run=dry_run, no_vault=no_vault, do_print=do_print, force=force
-            )
+            outcome = _run_one(date, dry_run=dry_run, do_print=do_print, force=force)
             if outcome is not None:
                 outcomes.append(outcome)
     except Exception as exc:
@@ -152,9 +153,9 @@ def run(date_str: str, dry_run: bool, no_vault: bool, do_print: bool, force: boo
                 cost_usd=_total_cost(outcomes),
             )
         raise
-    # --dry-run writes nothing (no job_runs row either); --no-vault DOES persist
-    # (it's the daily cron's mode) and therefore records its run here. A quiet
-    # day with no in-scope sessions still records 'ok' — the job ran.
+    # --dry-run writes nothing (no job_runs row either); a normal run persists
+    # the report and therefore records its run here. A quiet day with no
+    # in-scope sessions still records 'ok' — the job ran.
     if not dry_run:
         record_job_run(
             get_settings(),
@@ -190,7 +191,7 @@ def _run_summary(
 # Convenience aliases
 @main.command()
 @click.option("--dry-run", is_flag=True)
-@click.option("--no-vault", is_flag=True)
+@click.option("--no-vault", is_flag=True, hidden=True)
 @click.option("--print", "do_print", is_flag=True)
 @click.option("--force", is_flag=True)
 @click.pass_context
@@ -201,7 +202,7 @@ def today(ctx: click.Context, **kw) -> None:
 
 @main.command()
 @click.option("--dry-run", is_flag=True)
-@click.option("--no-vault", is_flag=True)
+@click.option("--no-vault", is_flag=True, hidden=True)
 @click.option("--print", "do_print", is_flag=True)
 @click.option("--force", is_flag=True)
 @click.pass_context
@@ -214,7 +215,6 @@ def _run_one(
     date: dt.date,
     *,
     dry_run: bool,
-    no_vault: bool,
     do_print: bool,
     force: bool,
 ) -> RunOutcome | None:
@@ -278,22 +278,16 @@ def _run_one(
         click.echo(report.section_md)
 
     if dry_run:
-        click.echo("  --dry-run: not persisting, not writing vault.", err=True)
+        click.echo("  --dry-run: not persisting.", err=True)
         return RunOutcome(date=date, sessions=len(bundles), persisted=False, cost_usd=0.0)
 
     persist_report(report)
     click.echo(f"  persisted to agent_review.daily_reports[{date.isoformat()}]", err=True)
-    outcome = RunOutcome(
+    # agent-review writes no files: the check-in renderer reads this row and
+    # emits the note section (hg6.6 — DB is the store, markdown is a projection).
+    return RunOutcome(
         date=date, sessions=len(bundles), persisted=True, cost_usd=report.est_cost_usd
     )
-
-    if no_vault:
-        click.echo("  --no-vault: skipping vault write.", err=True)
-        return outcome
-
-    path = write_section(date, report.section_md)
-    click.echo(f"  wrote section → {path}", err=True)
-    return outcome
 
 
 # ─── show / reset ────────────────────────────────────────────────────────────
@@ -302,7 +296,7 @@ def _run_one(
 @main.command()
 @click.argument("date_str")
 def show(date_str: str) -> None:
-    """Print the stored daily report (and the vault section) for DATE."""
+    """Print the stored daily report for DATE."""
     date = _parse_date(date_str)
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -322,17 +316,11 @@ def show(date_str: str) -> None:
     click.echo(f"est_cost:     ${row['est_cost_usd']}")
     click.echo("--- section ---")
     click.echo(row["narrative_md"])
-    section = read_section(date)
-    if section:
-        click.echo("--- vault current ---")
-        click.echo(section)
 
 
 @main.command()
 @click.argument("date_str")
-@click.option("--from-vault/--no-from-vault", default=True,
-              help="Also remove the section from the vault note.")
-def reset(date_str: str, from_vault: bool) -> None:
+def reset(date_str: str) -> None:
     """Delete cached digests + report for DATE so the next run re-does work."""
     date = _parse_date(date_str)
     bundles = extract_day(date)  # to learn the session ids in scope
@@ -350,11 +338,6 @@ def reset(date_str: str, from_vault: bool) -> None:
         )
         click.echo(f"deleted {cur.rowcount} report row", err=True)
         conn.commit()
-    if from_vault:
-        if remove_section(date):
-            click.echo("removed vault section", err=True)
-        else:
-            click.echo("no vault section to remove", err=True)
 
 
 if __name__ == "__main__":

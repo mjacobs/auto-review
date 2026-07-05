@@ -15,7 +15,7 @@
 # Postgres read-only for the producer's RUN STATUS for yesterday and ONLY
 # re-runs the producer + renderer if that run FAILED or never landed. On the
 # common no-gap day — including a legitimately quiet zero-session day — it logs
-# and exits 0, a clean no-op. Both `agent-review run D --no-vault` and
+# and exits 0, a clean no-op. Both `agent-review run D` and
 # `checkin-renderer run D` are idempotent, so a re-run cleanly REPLACES the
 # placeholder with the real section (confirmed by the manual backfill in the
 # hg6.11 incident).
@@ -124,10 +124,11 @@ fi
 # this REPLACES the placeholder.
 log "gap detected for $D (no ok agent-review run covering $D) — backfilling"
 
-# Producer: --no-vault writes the PG row only (ADR 002; the renderer owns the
-# vault projection). The renderer below commits/pushes the note.
+# Producer: agent-review is DB-only — writes the PG row, touches no files (ADR
+# 002 / hg6.6; the renderer owns the vault projection). The renderer below
+# commits/pushes the note.
 log "re-running agent-review for $D"
-agent-review run "$D" --no-vault
+agent-review run "$D"
 
 # Renderer: re-composes note D from the now-present PG rows, replacing the
 # placeholder section in the note file (it does NOT git-push — the wrapper owns
