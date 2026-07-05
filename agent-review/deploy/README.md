@@ -38,7 +38,6 @@ export LLM_API_KEY='...'
 Optional exports:
 
 ```bash
-export VAULT_PATH=$HOME/vault
 export TZ=America/Los_Angeles
 export MODEL_DIGEST=claude-haiku-4-5-20251001
 export MODEL_SYNTH=claude-sonnet-4-6

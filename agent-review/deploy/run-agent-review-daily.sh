@@ -39,7 +39,6 @@
 # that stage. The homelab runs digest=api (local model via gateway) and
 # synth=claude_cli (subscription).
 # Optional env:
-#   VAULT_PATH
 #   TZ
 #   MODEL_DIGEST / MODEL_SYNTH   — claude_cli stage: passed to `claude --model`
 #                                  (a Claude id/alias); api stage: a model the

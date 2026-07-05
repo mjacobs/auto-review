@@ -2,8 +2,10 @@
 
 LLM-synthesized daily narrative report of activity across agent CLIs
 (Claude Code, Codex, Gemini, OpenClaw, Hermes, …), built from the
-unified `agentsview` Postgres schema and written idempotently into the
-Obsidian check-in note.
+unified `agentsview` Postgres schema and persisted as rows to the
+`agent_review` schema. agent-review writes no files — the
+[check-in renderer](../renderer/) projects those rows into the Obsidian
+check-in note (hg6.6 / ADR 002).
 
 **Status:** beta — `today` works end-to-end. By default the LLM calls run via
 `claude -p` against the **Claude Max subscription** (see
@@ -19,8 +21,9 @@ See [`DESIGN.md`](./DESIGN.md) for the full design.
 
 ## What you get
 
-Running `agent-review today` appends a narrative section to
-`journal/checkins/YYYY-MM-DD.md`:
+A daily run persists a narrative report to `agent_review.daily_reports`.
+The check-in renderer reads that row and emits a section into
+`journal/checkins/YYYY-MM-DD.md` that looks like:
 
 ```markdown
 ## agent-review — 2026-05-14
@@ -67,8 +70,8 @@ uv run agent-review --help
 # Phase-by-phase exercise:
 uv run agent-review extract 2026-05-13 --print     # deterministic SQL extract only
 uv run agent-review digest <session-id>             # per-session LLM digest
-uv run agent-review today --dry-run --print         # full pipeline, no vault write
-uv run agent-review yesterday                       # full pipeline, write to vault
+uv run agent-review today --dry-run --print         # full pipeline, don't persist
+uv run agent-review yesterday                       # full pipeline, persist to PG (no files)
 ```
 
 ## Architecture in one paragraph
@@ -77,8 +80,9 @@ uv run agent-review yesterday                       # full pipeline, write to va
 no LLM. `digest` summarizes each session via Haiku in parallel (cached
 in Postgres so re-runs are free). `synth` calls Sonnet once with all
 digests + extracted scope to produce the day's narrative. `today`
-chains all three and writes the result into the vault. The Postgres
-cache is what makes mid-day re-runs cheap.
+chains all three and persists the result to `agent_review.daily_reports`
+(no files); the check-in renderer emits the note section from that row.
+The Postgres cache is what makes mid-day re-runs cheap.
 
 ## Configuration
 
@@ -95,7 +99,6 @@ All via environment or `.env`:
 | `CLAUDE_CLI_BIN`                      | `claude`                             | `claude_cli` backend: path to the Claude Code binary                 |
 | `CLAUDE_CLI_TIMEOUT`                  | `300`                                | `claude_cli` backend: per-call timeout, seconds                      |
 | `CLAUDE_CLI_EXTRA_ARGS`              | _(empty)_                            | `claude_cli` backend: extra flags appended to every `claude -p` (shlex-split), e.g. `--max-budget-usd 0.50` |
-| `VAULT_PATH`                          | `~/vault`                            | Obsidian vault root                                                  |
 | `TZ`                                  | `America/Los_Angeles`                | Timezone for day boundaries                                          |
 | `MODEL_DIGEST`                        | `claude-haiku-4-5-20251001`          | Model for per-session digests. Passed to `claude --model` (`claude_cli`) or used as the SDK/gateway model id (`api`) |
 | `MODEL_SYNTH`                         | `claude-sonnet-4-6`                  | Model for daily narrative synthesis. Same as `MODEL_DIGEST`          |
@@ -189,14 +192,12 @@ model list; if not, use one of the gateway's existing aliases.
 
 ## Output
 
-Daily sections land in `journal/checkins/YYYY-MM-DD.md` with marker:
-
-```
-<!-- agent-review:daily=2026-05-14 generated_at=2026-05-15T04:00:00Z -->
-```
-
-Sections are idempotent: re-running replaces the marked block in place;
-human edits outside the block survive.
+A run writes one row to `agent_review.daily_reports`, keyed by
+`report_date` — re-running a date upserts that row (idempotent). The
+rendered section markdown is stored on the row; the check-in renderer
+reads it and composes `journal/checkins/YYYY-MM-DD.md`. agent-review
+itself touches no files and holds no git path (the renderer is the single
+writer that commits the note — hg6.6 / ADR 002).
 
 ## Development
 

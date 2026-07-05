@@ -1,7 +1,7 @@
 [project]
 name = "agent-review"
 version = "0.1.0"
-description = "Daily narrative reports of agent (Claude/Codex/Gemini/...) activity, written into the Obsidian vault."
+description = "Daily narrative reports of agent (Claude/Codex/Gemini/...) activity, persisted to Postgres (the check-in renderer projects them into the vault)."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "mj" }]
@@ -9,8 +9,6 @@ dependencies = [
   "anthropic>=0.40.0",
   "psycopg[binary]>=3.2",
   "click>=8.1",
-  "jinja2>=3.1",
-  "python-frontmatter>=1.1",
   "pydantic>=2.7",
   "pydantic-settings>=2.4",
   "tenacity>=9.0",

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import socket
 import warnings
-from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -62,7 +60,6 @@ class Settings(BaseSettings):
     # hatch for e.g. `--max-budget-usd 0.50`. Normally empty.
     claude_cli_extra_args: str = Field("", alias="CLAUDE_CLI_EXTRA_ARGS")
 
-    vault_path: Path = Field(Path.home() / "vault", alias="VAULT_PATH")
     tz_name: str = Field("America/Los_Angeles", alias="TZ")
     model_digest: str = Field("claude-haiku-4-5-20251001", alias="MODEL_DIGEST")
     model_synth: str = Field("claude-sonnet-4-6", alias="MODEL_SYNTH")
@@ -151,23 +148,6 @@ class Settings(BaseSettings):
     @property
     def host(self) -> str:
         return self.job_host or socket.gethostname()
-
-    @property
-    def checkins_dir(self) -> Path:
-        return self.vault_path / "journal" / "checkins"
-
-    def checkin_path(self, date: dt.date) -> Path:
-        """Path to a daily check-in note, nested by month.
-
-        Layout: journal/checkins/YYYY/MM/YYYY-MM-DD.md (auto-review-d4c). The
-        filename keeps the full date so markers/links/date-keys are unchanged —
-        only the directory nests.
-        """
-        return self.checkins_dir / f"{date:%Y}" / f"{date:%m}" / f"{date.isoformat()}.md"
-
-    @property
-    def daily_template(self) -> Path:
-        return self.vault_path / "templates" / "daily.md"
 
 
 _settings: Settings | None = None
