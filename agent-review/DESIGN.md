@@ -294,8 +294,12 @@ agent-review reset 2026-05-14         # delete cached digests + report for re-ru
   --since-version N    # force re-digest of sessions whose data_version > N
 ```
 
-Exit codes: `0` success, `2` no in-scope sessions for date, `3` upstream DB
-unavailable, `4` Anthropic API failure.
+Exit codes (as implemented): `0` success — including a quiet day with no
+in-scope sessions (the `run`/`today`/`yesterday` pipeline records an `ok` job
+and exits 0); `2` a specific lookup found nothing (`digest <id>` for an unknown
+session, `show DATE` with no stored report). Upstream DB or Anthropic failures
+currently propagate as a generic nonzero exit — they are not (yet) mapped to
+distinct codes.
 
 ## Tech stack
 
