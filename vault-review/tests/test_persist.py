@@ -63,6 +63,39 @@ def test_persist_weekly_upserts_row(settings, store):
     assert store.weekly_digests[0]["events"] == EVENTS
 
 
+def test_naive_window_bounds_are_localized(settings, store):
+    # day_date_range/week_date_range return NAIVE local datetimes; they must be
+    # tz-attached before hitting the timestamptz columns, or PG interprets them
+    # in the DB session zone (roborev job 1538). settings.tz = America/Los_Angeles.
+    naive_start = dt.datetime(2026, 6, 14, 0, 0, 0)
+    naive_end = dt.datetime(2026, 6, 15, 0, 0, 0)
+    persist_daily(
+        settings,
+        digest_date=dt.date(2026, 6, 14),
+        window_start=naive_start,
+        window_end=naive_end,
+        events=EVENTS,
+        connect=store.connect,
+    )
+    row = store.daily_digests[0]
+    assert row["window_start"].tzinfo is not None
+    assert row["window_start"] == naive_start.replace(tzinfo=settings.tz)
+    assert row["window_end"] == naive_end.replace(tzinfo=settings.tz)
+
+
+def test_aware_window_bounds_pass_through(settings, store):
+    aware = dt.datetime(2026, 6, 14, 0, 0, tzinfo=dt.UTC)
+    persist_daily(
+        settings,
+        digest_date=dt.date(2026, 6, 14),
+        window_start=aware,
+        window_end=aware,
+        events=EVENTS,
+        connect=store.connect,
+    )
+    assert store.daily_digests[0]["window_start"] == aware  # unchanged
+
+
 def test_persist_uses_its_own_connection(settings, store):
     before = store.connections_opened
     persist_daily(

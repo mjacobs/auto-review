@@ -49,6 +49,19 @@ ON CONFLICT (week_label) DO UPDATE SET
 ConnectFn = Callable[[], object]
 
 
+def _localize(ts: dt.datetime, tz: dt.tzinfo) -> dt.datetime:
+    """Attach ``tz`` to a naive window bound before it hits a timestamptz column.
+
+    `day_date_range` / `week_date_range` return NAIVE local datetimes (they feed
+    git log --since/--until, which wants local wall-clock). Sent naive into a
+    timestamptz column, libpq/PG would interpret them in the DB session's zone —
+    wrong UTC instants whenever that differs from the vault's zone. Interpreting
+    them as the configured local zone here fixes that; an already-aware bound is
+    passed through unchanged.
+    """
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=tz)
+
+
 def persist_daily(
     settings: Settings,
     *,
@@ -73,8 +86,8 @@ def persist_daily(
             SQL_UPSERT_DAILY,
             {
                 "digest_date": digest_date,
-                "window_start": window_start,
-                "window_end": window_end,
+                "window_start": _localize(window_start, settings.tz),
+                "window_end": _localize(window_end, settings.tz),
                 "events": json.dumps(events),
             },
         )
@@ -99,8 +112,8 @@ def persist_weekly(
             SQL_UPSERT_WEEKLY,
             {
                 "week_label": week_label,
-                "window_start": window_start,
-                "window_end": window_end,
+                "window_start": _localize(window_start, settings.tz),
+                "window_end": _localize(window_end, settings.tz),
                 "events": json.dumps(events),
             },
         )

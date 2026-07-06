@@ -168,10 +168,16 @@ def _run_one(
             "row_persisted": persisted,
         },
     )
+    # persist_daily and record_job_run share the same DSN gate, so `persisted`
+    # tells the whole story: with no DSN neither the digest row nor the job_runs
+    # row was written (don't claim a job_runs row that never landed).
     click.echo(
         f"  wrote section → {path}; "
-        f"{'daily_digests row upserted; ' if persisted else 'no DSN (no row); '}"
-        "job_runs row recorded.",
+        + (
+            "daily_digests + job_runs rows recorded."
+            if persisted
+            else "no PG DSN — no digest row, no job_runs row."
+        ),
         err=True,
     )
 
@@ -266,8 +272,11 @@ def _run_weekly_one(
     )
     click.echo(
         f"  wrote section → {path}; "
-        f"{'weekly_digests row upserted; ' if persisted else 'no DSN (no row); '}"
-        "job_runs row recorded.",
+        + (
+            "weekly_digests + job_runs rows recorded."
+            if persisted
+            else "no PG DSN — no digest row, no job_runs row."
+        ),
         err=True,
     )
 
