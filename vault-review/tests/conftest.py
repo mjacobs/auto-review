@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from vault_review import config, runlog
+from vault_review import config, persist, runlog
 
 
 class FakeCursor:
@@ -32,6 +32,14 @@ class FakeCursor:
             row = dict(params)
             row["summary"] = json.loads(row["summary"])
             self.store.job_runs.append(row)
+        elif sql == persist.SQL_UPSERT_DAILY:
+            row = dict(params)
+            row["events"] = json.loads(row["events"])
+            self.store.daily_digests.append(row)
+        elif sql == persist.SQL_UPSERT_WEEKLY:
+            row = dict(params)
+            row["events"] = json.loads(row["events"])
+            self.store.weekly_digests.append(row)
         else:  # pragma: no cover - a new query needs a fake branch
             raise AssertionError(f"unexpected SQL in fake store:\n{sql}")
 
@@ -49,6 +57,8 @@ class FakeStore:
 
     def __init__(self) -> None:
         self.job_runs: list[dict] = []
+        self.daily_digests: list[dict] = []
+        self.weekly_digests: list[dict] = []
         self.connections_opened = 0
         self.fail_connect = False  # make connect itself raise (best-effort tests)
 

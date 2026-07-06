@@ -152,38 +152,64 @@ def group_of(rel: str) -> str:
     return parts[0] if len(parts) > 1 else "(root)"
 
 
-def render_dossier(
-    vault_path: Path,
-    events: list[Event],
+def build_events(vault_path: Path, events: list[Event]) -> list[dict]:
+    """Resolve raw git-delta events into the self-describing rows persisted to
+    ``vault_review.daily_digests.events`` (auto-review-hg6.7).
+
+    Each element carries everything the renderer needs to format the dossier
+    line *without* touching the vault — crucially the per-file ``summary``,
+    which `summarize_file` reads from the working tree at digest time (the tree
+    moves on, so the summary is only capturable when the job runs; see the
+    0003_vault_review.sql migration comment). Shape per element:
+        {"status", "path", "renamed_from", "group", "summary"}
+    where ``path`` is the effective path (the new name for a rename, the deleted
+    path for a delete) and ``summary`` is populated only for adds/modifies.
+    """
+    built: list[dict] = []
+    for status, p1, p2 in events:
+        effective = p2 or p1
+        built.append(
+            {
+                "status": status,
+                "path": effective,
+                "renamed_from": p1 if status.startswith("R") else None,
+                "group": group_of(effective),
+                "summary": (
+                    summarize_file(vault_path, effective)
+                    if status in ("A", "M")
+                    else None
+                ),
+            }
+        )
+    return built
+
+
+def render_events(
+    events: list[dict],
     window_label: str,
     heading: str,
 ) -> str:
-    """Render a markdown dossier section from vault git-delta events.
+    """Render a markdown dossier section from built event rows (pure function).
 
-    Returns the full markdown string for the dossier section (no trailing
-    closing marker — the vault writer adds that).
-
-    Args:
-        vault_path: Absolute path to the vault repo (used for file summaries).
-        events: List of (status, path1, path2_or_None) from collect_events().
-        window_label: Human-readable window description, e.g. "2026-05-14".
-        heading: Heading text, e.g. "vault-review — 2026-05-14".
+    Operates only on the structured rows from `build_events` — no vault access —
+    so the same logic renders from live events (vault-review) or from a stored
+    `daily_digests.events` jsonb (the check-in renderer's port, hg6.7).
     """
     by_group: dict[str, list[str]] = {}
-    for status, p1, p2 in events:
-        effective = p2 or p1
-        g = group_of(effective)
+    for e in events:
+        status = e["status"]
+        path = e["path"]
         if status == "A":
-            line = f"- `+` `{effective}` — {summarize_file(vault_path, effective)}"
+            line = f"- `+` `{path}` — {e['summary']}"
         elif status == "M":
-            line = f"- `~` `{effective}` — {summarize_file(vault_path, effective)}"
+            line = f"- `~` `{path}` — {e['summary']}"
         elif status == "D":
-            line = f"- `-` `{p1}`"
+            line = f"- `-` `{path}`"
         elif status.startswith("R"):
-            line = f"- `↻` `{p2}` (renamed from `{p1}`)"
+            line = f"- `↻` `{path}` (renamed from `{e['renamed_from']}`)"
         else:
-            line = f"- `?` {status} `{effective}`"
-        by_group.setdefault(g, []).append(line)
+            line = f"- `?` {status} `{path}`"
+        by_group.setdefault(e["group"], []).append(line)
 
     out = [f"## {heading}", "", f"_window: {window_label}_", ""]
     if not by_group:
@@ -194,3 +220,25 @@ def render_dossier(
         out.extend(by_group[g])
         out.append("")
     return "\n".join(out)
+
+
+def render_dossier(
+    vault_path: Path,
+    events: list[Event],
+    window_label: str,
+    heading: str,
+) -> str:
+    """Render a markdown dossier section from vault git-delta events.
+
+    Returns the full markdown string for the dossier section (no trailing
+    closing marker — the vault writer adds that). Thin wrapper over
+    `build_events` + `render_events` so the produced markdown and the persisted
+    `events` rows (hg6.7) stay in lockstep.
+
+    Args:
+        vault_path: Absolute path to the vault repo (used for file summaries).
+        events: List of (status, path1, path2_or_None) from collect_events().
+        window_label: Human-readable window description, e.g. "2026-05-14".
+        heading: Heading text, e.g. "vault-review — 2026-05-14".
+    """
+    return render_events(build_events(vault_path, events), window_label, heading)

@@ -10,8 +10,9 @@ import click
 from dateutil import parser as date_parser
 
 from .config import get_settings
-from .dossier import render_dossier
+from .dossier import build_events, render_events
 from .gitdelta import collect_events
+from .persist import persist_daily, persist_weekly
 from .runlog import record_best_effort, record_job_run
 from .vault import (
     read_daily_section,
@@ -118,18 +119,28 @@ def _run_one(
         events = collect_events(s.vault_path, start, end)
         click.echo(f"  {len(events)} events in window", err=True)
 
+        # Build the self-describing event rows ONCE (summaries read from the
+        # working tree here) and render from them, so the markdown section and
+        # the persisted daily_digests row stay byte-consistent (hg6.7).
+        built = build_events(s.vault_path, events)
         heading = f"vault-review — {date.isoformat()}"
         window_label = date.isoformat()
-        section_md = render_dossier(s.vault_path, events, window_label, heading)
+        section_md = render_events(built, window_label, heading)
 
         if do_print:
             click.echo(section_md)
 
         if dry_run:
-            click.echo("  --dry-run: not writing to vault, no job_runs row.", err=True)
+            click.echo("  --dry-run: not writing to vault, no rows, no job_runs row.", err=True)
             return
 
         path = write_daily_section(date, section_md)
+        # Persist the row (the store the renderer projects from). Loud on
+        # failure — the markdown already landed, so the note is intact, but a
+        # failed row-write fails the run (records an 'error' job_run below).
+        persisted = persist_daily(
+            s, digest_date=date, window_start=start, window_end=end, events=built
+        )
     except Exception as exc:
         if not dry_run:
             record_best_effort(
@@ -154,9 +165,15 @@ def _run_one(
             "date": date.isoformat(),
             "events": len(events),
             "note_path": str(path),
+            "row_persisted": persisted,
         },
     )
-    click.echo(f"  wrote section → {path}; job_runs row recorded.", err=True)
+    click.echo(
+        f"  wrote section → {path}; "
+        f"{'daily_digests row upserted; ' if persisted else 'no DSN (no row); '}"
+        "job_runs row recorded.",
+        err=True,
+    )
 
 
 # ─── run-weekly ──────────────────────────────────────────────────────────────
@@ -194,11 +211,15 @@ def _run_weekly_one(
         events = collect_events(s.vault_path, start, end)
         click.echo(f"  {len(events)} events in window", err=True)
 
+        built = build_events(s.vault_path, events)
         heading = f"vault-review weekly — {week_label}"
         window_label = f"7d ({week_label})"
-        section_md = render_dossier(s.vault_path, events, window_label, heading)
+        section_md = render_events(built, window_label, heading)
 
-        # Append synthesis stub per vault-agent convention (ADR 006)
+        # Append synthesis stub per vault-agent convention (ADR 006). NB: the
+        # synthesis stub is a markdown-only affordance and is NOT part of the
+        # persisted events (it carries no git-delta signal) — the renderer's
+        # weekly port re-adds it around the row-rendered dossier (hg6.7).
         section_md = section_md.rstrip() + (
             "\n\n## synthesis\n\n"
             "_To be authored in a separate 1:1 review session over the dossier "
@@ -209,10 +230,13 @@ def _run_weekly_one(
             click.echo(section_md)
 
         if dry_run:
-            click.echo("  --dry-run: not writing to vault, no job_runs row.", err=True)
+            click.echo("  --dry-run: not writing to vault, no rows, no job_runs row.", err=True)
             return
 
         path = write_weekly_section(week_label, section_md)
+        persisted = persist_weekly(
+            s, week_label=week_label, window_start=start, window_end=end, events=built
+        )
     except Exception as exc:
         if not dry_run:
             record_best_effort(
@@ -237,9 +261,15 @@ def _run_weekly_one(
             "week_label": week_label,
             "events": len(events),
             "note_path": str(path),
+            "row_persisted": persisted,
         },
     )
-    click.echo(f"  wrote section → {path}; job_runs row recorded.", err=True)
+    click.echo(
+        f"  wrote section → {path}; "
+        f"{'weekly_digests row upserted; ' if persisted else 'no DSN (no row); '}"
+        "job_runs row recorded.",
+        err=True,
+    )
 
 
 # ─── show / show-weekly ───────────────────────────────────────────────────────

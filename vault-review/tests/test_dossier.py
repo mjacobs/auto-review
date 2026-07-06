@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from vault_review.dossier import group_of, render_dossier, summarize_file
+from vault_review.dossier import (
+    build_events,
+    group_of,
+    render_dossier,
+    render_events,
+    summarize_file,
+)
 
 # ─── group_of ────────────────────────────────────────────────────────────────
 
@@ -264,3 +270,80 @@ class TestRenderDossier:
         ]
         for line in expected_lines:
             assert line in result, f"missing line: {line!r}"
+
+
+# ─── build_events / render_events (hg6.7) ─────────────────────────────────────
+
+
+class TestBuildEvents:
+    """The structured rows persisted to vault_review.daily_digests.events."""
+
+    def test_added_and_modified_carry_summary(self, tmp_path):
+        (tmp_path / "a.md").write_text("# A\n\nAdded body.\n", encoding="utf-8")
+        (tmp_path / "m.md").write_text("# M\n\nModified body.\n", encoding="utf-8")
+        built = build_events(tmp_path, [("A", "a.md", None), ("M", "m.md", None)])
+        assert built[0] == {
+            "status": "A", "path": "a.md", "renamed_from": None,
+            "group": "(root)", "summary": "A — Added body.",
+        }
+        assert built[1]["status"] == "M"
+        assert built[1]["summary"] == "M — Modified body."
+
+    def test_delete_has_no_summary(self, tmp_path):
+        built = build_events(tmp_path, [("D", "gone.md", None)])
+        assert built[0] == {
+            "status": "D", "path": "gone.md", "renamed_from": None,
+            "group": "(root)", "summary": None,
+        }
+
+    def test_rename_captures_new_path_and_source(self, tmp_path):
+        (tmp_path / "new.md").write_text("# New\n", encoding="utf-8")
+        built = build_events(tmp_path, [("R100", "old.md", "new.md")])
+        assert built[0]["path"] == "new.md"           # effective = the new name
+        assert built[0]["renamed_from"] == "old.md"
+        assert built[0]["summary"] is None            # renames don't summarize
+        assert built[0]["group"] == "(root)"
+
+    def test_group_uses_effective_path(self, tmp_path):
+        (tmp_path / "projects" / "foo").mkdir(parents=True)
+        (tmp_path / "projects" / "foo" / "n.md").write_text("# N\n", encoding="utf-8")
+        built = build_events(tmp_path, [("A", "projects/foo/n.md", None)])
+        assert built[0]["group"] == "projects/foo"
+
+
+class TestRenderEvents:
+    """render_events is pure (no vault access) — renders from the stored rows."""
+
+    def test_round_trips_with_render_dossier(self, tmp_path):
+        # Semantic-equivalence guard (hg6.7): rendering from the persisted rows
+        # must match rendering straight from raw events — this is exactly what
+        # the check-in renderer's port relies on to own the section byte-wise.
+        (tmp_path / "journal").mkdir()
+        (tmp_path / "projects" / "foo").mkdir(parents=True)
+        (tmp_path / "journal" / "n.md").write_text("# J\n\nJournal body.\n", encoding="utf-8")
+        (tmp_path / "projects" / "foo" / "p.md").write_text("# P\n\nProj body.\n", encoding="utf-8")
+        raw = [
+            ("A", "journal/n.md", None),
+            ("M", "projects/foo/p.md", None),
+            ("D", "old/gone.md", None),
+            ("R100", "a/was.md", "a/now.md"),
+        ]
+        direct = render_dossier(tmp_path, raw, "2026-05-14", "vault-review — 2026-05-14")
+        from_rows = render_events(
+            build_events(tmp_path, raw), "2026-05-14", "vault-review — 2026-05-14"
+        )
+        assert from_rows == direct
+
+    def test_needs_no_vault_access(self):
+        # Pure function: given rows, it renders with no filesystem at all.
+        rows = [
+            {"status": "M", "path": "projects/x/n.md", "renamed_from": None,
+             "group": "projects/x", "summary": "did a thing"},
+        ]
+        out = render_events(rows, "2026-05-14", "vault-review — 2026-05-14")
+        assert "### projects/x" in out
+        assert "- `~` `projects/x/n.md` — did a thing" in out
+
+    def test_empty_rows_render_no_changes(self):
+        out = render_events([], "2026-05-14", "vault-review — 2026-05-14")
+        assert "_no authored changes in window_" in out
