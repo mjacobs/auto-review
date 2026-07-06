@@ -7,7 +7,7 @@ import datetime as dt
 from click.testing import CliRunner
 
 from checkin_renderer.cli import main
-from tests.conftest import make_agent_row, make_capture_row
+from tests.conftest import make_agent_row, make_capture_row, make_vault_digest_row
 
 DATE = dt.date(2026, 6, 10)
 
@@ -16,6 +16,7 @@ def _seed(store) -> None:
     store.captures.append(
         make_capture_row("01:01", summary="an idea.", tags=("idea",), capture_id="c1")
     )
+    store.vault_digests[DATE] = make_vault_digest_row()  # one M event, "did a thing"
     store.agent_reports[DATE] = make_agent_row(
         narrative_md=(
             "## agent-review — 2026-06-11 00:23\n\nlegacy body\n\n"
@@ -29,6 +30,8 @@ def test_run_dry_run_print_writes_nothing(settings, store):
     result = CliRunner().invoke(main, ["run", "2026-06-10", "--dry-run", "--print"])
     assert result.exit_code == 0, result.output
     assert "<!-- checkin-renderer:begin daily=2026-06-10 -->" in result.output
+    assert "## vault-review — 2026-06-10" in result.output
+    assert "- `~` `projects/x/n.md` — did a thing" in result.output
     assert "## memex — 2026-06-10 — inbox" in result.output
     assert "- 01:01 — an idea. `[#idea]`" in result.output
     assert "legacy body" in result.output
@@ -51,6 +54,7 @@ def test_run_writes_note_and_records_ok_run(settings, store):
     assert row["summary"]["date"] == "2026-06-10"
     assert row["summary"]["mode"] == "bracket"
     assert row["summary"]["sections"] == {
+        "vault": {"row": True, "events": 1},
         "memex": {"captures": 1},
         "agent": {"row": True, "legacy": True},
     }

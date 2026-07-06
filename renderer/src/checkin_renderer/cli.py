@@ -154,15 +154,18 @@ def _render_sections(
     with db.connect() as conn:
         captures = queries.fetch_memex_captures(conn, start, end)
         report = queries.fetch_agent_report(conn, date)
+        vault_digest = queries.fetch_vault_digest(conn, date)
 
     sections: dict[str, str | None] = {
         "health": render_health_section(date),
-        "vault": render_vault_section(date),
+        "vault": render_vault_section(vault_digest, date),
         "memex": render_memex_section(captures, date, s.tz),
         "agent": render_agent_section(report, date),
         "projects": render_projects_section(date),
     }
     counts = {
+        "vault": {"row": vault_digest is not None,
+                  "events": len(vault_digest.events) if vault_digest else 0},
         "memex": {"captures": len(captures)},
         "agent": {
             "row": report is not None,
@@ -218,10 +221,14 @@ def sections_cmd(date_str: str) -> None:
     with db.connect() as conn:
         captures = queries.fetch_memex_captures(conn, start, end)
         report = queries.fetch_agent_report(conn, date)
+        vault_digest = queries.fetch_vault_digest(conn, date)
 
     click.echo(f"sections for {date.isoformat()} ({s.tz_name}):")
     click.echo("  health:   — (Phase 4 / step D; the doctor still owns the health section)")
-    click.echo("  vault:    — (Phase 3 / step C; vault-review still owns its marker section)")
+    if vault_digest is None:
+        click.echo("  vault:    NO daily_digests row — placeholder would render")
+    else:
+        click.echo(f"  vault:    row present ({len(vault_digest.events)} event(s))")
     click.echo(f"  memex:    {len(captures)} capture(s) in window")
     if report is None:
         click.echo("  agent:    NO daily_reports row — placeholder would render")

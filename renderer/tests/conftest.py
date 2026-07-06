@@ -59,6 +59,23 @@ def make_agent_row(
     }
 
 
+def make_vault_digest_row(
+    *,
+    date: dt.date = dt.date(2026, 6, 10),
+    events: list[dict] | None = None,
+) -> dict[str, Any]:
+    """A vault_review.daily_digests row dict as the fake store holds it (hg6.7)."""
+    return {
+        "digest_date": date,
+        "window_start": dt.datetime.combine(date, dt.time.min, tzinfo=PT),
+        "window_end": dt.datetime.combine(date, dt.time.min, tzinfo=PT) + dt.timedelta(days=1),
+        "events": events if events is not None else [
+            {"status": "M", "path": "projects/x/n.md", "renamed_from": None,
+             "group": "projects/x", "summary": "did a thing"},
+        ],
+    }
+
+
 # ── fake PG layer ─────────────────────────────────────────────────────────────
 
 
@@ -89,6 +106,10 @@ class FakeCursor:
             self.store.maybe_fail()
             row = self.store.agent_reports.get(params["date"])
             self._rows = [row] if row is not None else []
+        elif sql == queries.SQL_VAULT_DIGEST:
+            self.store.maybe_fail()
+            row = self.store.vault_digests.get(params["date"])
+            self._rows = [row] if row is not None else []
         elif sql == runlog.SQL_INSERT_JOB_RUN:
             row = dict(params)
             row["summary"] = json.loads(row["summary"])
@@ -117,6 +138,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.captures: list[dict] = []
         self.agent_reports: dict[dt.date, dict] = {}
+        self.vault_digests: dict[dt.date, dict] = {}
         self.job_runs: list[dict] = []
         self.connections_opened = 0
         self.fail_queries = False  # make section queries raise (error-path tests)

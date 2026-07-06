@@ -31,6 +31,15 @@ SELECT report_date, generated_at, narrative_md, stats
  WHERE report_date = %(date)s
 """
 
+# vault-review section: the producer's one digest row per day (hg6.7). events is
+# the self-describing jsonb array (status/path/group/summary) the renderer
+# formats without touching the vault.
+SQL_VAULT_DIGEST = """
+SELECT digest_date, window_start, window_end, events
+  FROM vault_review.daily_digests
+ WHERE digest_date = %(date)s
+"""
+
 # ── row shapes ────────────────────────────────────────────────────────────────
 
 
@@ -53,6 +62,16 @@ class AgentReportRow:
     generated_at: dt.datetime
     narrative_md: str
     stats: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class VaultDigestRow:
+    """One vault_review.daily_digests row (hg6.7)."""
+
+    digest_date: dt.date
+    window_start: dt.datetime
+    window_end: dt.datetime
+    events: tuple[dict[str, Any], ...]
 
 
 # ── fetchers ──────────────────────────────────────────────────────────────────
@@ -87,4 +106,20 @@ def fetch_agent_report(conn, date: dt.date) -> AgentReportRow | None:
         generated_at=row["generated_at"],
         narrative_md=row["narrative_md"],
         stats=dict(row["stats"]),
+    )
+
+
+def fetch_vault_digest(conn, date: dt.date) -> VaultDigestRow | None:
+    """The day's vault_review.daily_digests row, or None when the producer
+    hasn't landed one (hg6.7)."""
+    with conn.cursor() as cur:
+        cur.execute(SQL_VAULT_DIGEST, {"date": date})
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return VaultDigestRow(
+        digest_date=row["digest_date"],
+        window_start=row["window_start"],
+        window_end=row["window_end"],
+        events=tuple(row["events"] or ()),
     )
